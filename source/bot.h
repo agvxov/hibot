@@ -20,22 +20,31 @@ void event_connect(irc_session_t * session,
 	(void)origin;
 	(void)params;
 	(void)count;
-	/* msg ChanServ IDENTIFY? */
+
+	// XXX: msg ChanServ IDENTIFY?
 	log_notice("IRC connection secured.");
 	irc_cmd_join(session, channel, 0);
-	ircmsg("TEST");
+	char * buffer;
+	asprintf(&buffer, "Joined destination channel: `%s`.", channel);
+	log_notice(buffer);
+	free(buffer);
 }
 
-void event_channel(irc_session_t * session,
-							char const	* event,
-							char const	* origin,
-							char const ** params,
-							unsigned int count) {
+void event_privmsg(irc_session_t * session,
+                   const char  * event,
+                   const char  * origin,
+                   const char ** params,
+                   unsigned int count) {
 	(void)session;
 	(void)event;
-	(void)origin;
 	(void)count;
-	/* */
+
+	char * buffer = (char *)origin;
+	while (*(buffer++) != '!') { ; }
+	asprintf(&buffer, "From %.*s:", (int)(buffer - origin)-1, origin);
+	ircmsg(buffer);
+	free(buffer);
+
 	char const * message = params[1];
 	ircmsg(message);
 }
@@ -43,7 +52,7 @@ void event_channel(irc_session_t * session,
 int connect_bot(const char * const server, const short port) {
 	memset(&callbacks, 0, sizeof(callbacks));
 	callbacks.event_connect = event_connect;
-	callbacks.event_channel = event_channel;
+	callbacks.event_privmsg = event_privmsg;
 	session = irc_create_session(&callbacks);
 
 	if (!session) {
@@ -61,6 +70,8 @@ int connect_bot(const char * const server, const short port) {
 	            username,
 	            username
 	);
+
+	return 0;
 }
 
 int connection_loop(void) {

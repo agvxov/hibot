@@ -1,4 +1,5 @@
 #define PROGRAM_NAME "hibot"
+#define _GNU_SOURCE
 
 #include "config.inc"
 
@@ -10,7 +11,7 @@ char * port;
 FILE * log_file;
 
 #include "log.h"
-//#include "xilight.h"
+//#include "syntax.h"
 #include "bot.h"
 
 const char help_message[] =
@@ -38,7 +39,7 @@ signed main(int argc, char * * argv) {
 
 	log_file = stdout;
 
-	connect_bot(server, 6665);
+	connect_bot(server, port_i);
 	connection_loop();
 
 	return 0;
