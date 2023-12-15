@@ -45,8 +45,9 @@ void event_privmsg(irc_session_t * session,
 	ircmsg(buffer);
 	free(buffer);
 
-	char const * message = params[1];
-	ircmsg(message);
+	char * message = strdup(params[1]);
+	ircmsg(syntax_highlight(message));
+	free(message);
 }
 
 int connect_bot(const char * const server, const short port) {

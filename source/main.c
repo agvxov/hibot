@@ -11,7 +11,7 @@ char * port;
 FILE * log_file;
 
 #include "log.h"
-//#include "syntax.h"
+#include "syntax.h"
 #include "bot.h"
 
 const char help_message[] =
@@ -38,6 +38,8 @@ signed main(int argc, char * * argv) {
 	}
 
 	log_file = stdout;
+
+	syntax_c();
 
 	connect_bot(server, port_i);
 	connection_loop();
