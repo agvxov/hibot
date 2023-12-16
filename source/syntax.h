@@ -2,21 +2,17 @@
 
 #define SYNTAX_LIMIT (144)
 
-#define EFFECT_NORMAL    ('0')
-#define EFFECT_BOLD      ('1')
-#define EFFECT_ITALIC    ('3')
-#define EFFECT_UNDERLINE ('4')
-#define EFFECT_BLINK     ('5')
-#define EFFECT_REVERSE   ('7')
-
-#define COLOUR_GREY   ('0')
-#define COLOUR_RED    ('1')
-#define COLOUR_GREEN  ('2')
-#define COLOUR_YELLOW ('3')
-#define COLOUR_BLUE   ('4')
-#define COLOUR_PINK   ('5')
-#define COLOUR_CYAN   ('6')
-#define COLOUR_WHITE  ('7')
+#define COLOUR_WHITE   ("00")
+#define COLOUR_BLUE    ("02")
+#define COLOUR_GREEN   ("03")
+#define COLOUR_RED     ("04")
+#define COLOUR_BROWN   ("05")
+#define COLOUR_MAGENTA ("06")
+#define COLOUR_ORANGE  ("07")
+#define COLOUR_YELLOW  ("08")
+#define COLOUR_CYAN    ("11")
+#define COLOUR_PINK    ("13")
+#define COLOUR_GREY    ("14")
 
 extern void syntax_c   (void);
 extern void syntax_ada (void);
@@ -25,13 +21,12 @@ extern char * syntax_highlight (char * string);
 
 static size_t syntax_count = 0;
 
-static int  syntax_enrange [SYNTAX_LIMIT];
-static int  syntax_derange [SYNTAX_LIMIT];
-static char syntax_begin   [SYNTAX_LIMIT] [96];
-static char syntax_end     [SYNTAX_LIMIT] [96];
-static char syntax_escape  [SYNTAX_LIMIT];
-static char syntax_colour  [SYNTAX_LIMIT];
-static char syntax_effect  [SYNTAX_LIMIT];
+static int    syntax_enrange [SYNTAX_LIMIT];
+static int    syntax_derange [SYNTAX_LIMIT];
+static char   syntax_begin   [SYNTAX_LIMIT] [96];
+static char   syntax_end     [SYNTAX_LIMIT] [96];
+static char   syntax_escape  [SYNTAX_LIMIT];
+static char * syntax_colour  [SYNTAX_LIMIT];
 
 static int character_compare_array (char character, char * character_array) {
 	size_t i = 0;
@@ -50,8 +45,7 @@ static void syntax_rule (int    enrange,
                          char * begin,
                          char * end,
                          char   escape,
-                         char   colour,
-                         char   effect) {
+                         char * colour) {
 	if (syntax_count >= SYNTAX_LIMIT) {
 		return;
 	}
@@ -63,7 +57,6 @@ static void syntax_rule (int    enrange,
 	syntax_derange [syntax_count] = derange;
 	syntax_escape  [syntax_count] = escape;
 	syntax_colour  [syntax_count] = colour;
-	syntax_effect  [syntax_count] = effect;
 
 	++syntax_count;
 }
@@ -141,23 +134,23 @@ void syntax_c (void) {
 
 	size_t word;
 
-	syntax_rule (0, 0, "/*", "*/", '\0', COLOUR_GREY,   EFFECT_BOLD);
-	syntax_rule (0, 0, "//", "\n", '\0', COLOUR_GREY,   EFFECT_BOLD);
-	syntax_rule (0, 0, "#",  "\n", '\\', COLOUR_YELLOW, EFFECT_ITALIC);
-	syntax_rule (0, 0, "'",  "'",  '\\', COLOUR_PINK,   EFFECT_BOLD);
-	syntax_rule (0, 0, "\"", "\"", '\\', COLOUR_PINK,   EFFECT_NORMAL);
+	syntax_rule (0, 0, "/*", "*/", '\0', COLOUR_GREY);
+	syntax_rule (0, 0, "//", "\n", '\0', COLOUR_GREY);
+	syntax_rule (0, 0, "#",  "\n", '\\', COLOUR_YELLOW);
+	syntax_rule (0, 0, "'",  "'",  '\\', COLOUR_PINK);
+	syntax_rule (0, 0, "\"", "\"", '\\', COLOUR_PINK);
 
 	for (word = 0; word != sizeof (keywords) / sizeof (keywords [0]); ++word) {
-		syntax_rule (0, 1, keywords [word], separators, '\0', COLOUR_YELLOW, EFFECT_BOLD);
+		syntax_rule (0, 1, keywords [word], separators, '\0', COLOUR_YELLOW);
 	}
 
-	syntax_rule (1, 0, "()[]{}",             "", '\0', COLOUR_BLUE, EFFECT_NORMAL);
-	syntax_rule (1, 0, ".,:;<=>+*-/%!&~^?|", "", '\0', COLOUR_CYAN, EFFECT_NORMAL);
+	syntax_rule (1, 0, "()[]{}",             "", '\0', COLOUR_BLUE);
+	syntax_rule (1, 0, ".,:;<=>+*-/%!&~^?|", "", '\0', COLOUR_CYAN);
 
-	syntax_rule (1, 1, "0123456789",                 separators, '\0', COLOUR_PINK,  EFFECT_BOLD);
-	syntax_rule (1, 1, "abcdefghijklmnopqrstuvwxyz", separators, '\0', COLOUR_WHITE, EFFECT_NORMAL);
-	syntax_rule (1, 1, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", separators, '\0', COLOUR_WHITE, EFFECT_BOLD);
-	syntax_rule (1, 1, "_",                          separators, '\0', COLOUR_WHITE, EFFECT_ITALIC);
+	syntax_rule (1, 1, "0123456789",                 separators, '\0', COLOUR_PINK);
+	syntax_rule (1, 1, "abcdefghijklmnopqrstuvwxyz", separators, '\0', COLOUR_WHITE);
+	syntax_rule (1, 1, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", separators, '\0', COLOUR_WHITE);
+	syntax_rule (1, 1, "_",                          separators, '\0', COLOUR_WHITE);
 }
 
 void syntax_ada (void) {
@@ -178,20 +171,20 @@ void syntax_ada (void) {
 
 	size_t word;
 
-	syntax_rule (0, 0, "--", "\n", '\0', COLOUR_GREY, EFFECT_BOLD);
-	syntax_rule (0, 0, "'",  "'",  '\\', COLOUR_PINK, EFFECT_BOLD);
-	syntax_rule (0, 0, "\"", "\"", '\\', COLOUR_PINK, EFFECT_NORMAL);
+	syntax_rule (0, 0, "--", "\n", '\0', COLOUR_GREY);
+	syntax_rule (0, 0, "'",  "'",  '\\', COLOUR_PINK);
+	syntax_rule (0, 0, "\"", "\"", '\\', COLOUR_PINK);
 
 	for (word = 0; word != sizeof (keywords) / sizeof (keywords [0]); ++word) {
-		syntax_rule (0, 1, keywords [word], separators, '\0', COLOUR_YELLOW, EFFECT_BOLD);
+		syntax_rule (0, 1, keywords [word], separators, '\0', COLOUR_YELLOW);
 	}
 
-	syntax_rule (1, 0, "()",             "", '\0', COLOUR_BLUE, EFFECT_NORMAL);
-	syntax_rule (1, 0, ".,:;<=>+-*/&|'", "", '\0', COLOUR_CYAN, EFFECT_NORMAL);
+	syntax_rule (1, 0, "()",             "", '\0', COLOUR_BLUE);
+	syntax_rule (1, 0, ".,:;<=>+-*/&|'", "", '\0', COLOUR_CYAN);
 
-	syntax_rule (1, 1, "0123456789",                 separators, '\0', COLOUR_PINK,  EFFECT_BOLD);
-	syntax_rule (1, 1, "abcdefghijklmnopqrstuvwxyz", separators, '\0', COLOUR_WHITE, EFFECT_NORMAL);
-	syntax_rule (1, 1, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", separators, '\0', COLOUR_WHITE, EFFECT_BOLD);
+	syntax_rule (1, 1, "0123456789",                 separators, '\0', COLOUR_PINK);
+	syntax_rule (1, 1, "abcdefghijklmnopqrstuvwxyz", separators, '\0', COLOUR_WHITE);
+	syntax_rule (1, 1, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", separators, '\0', COLOUR_WHITE);
 }
 
 char * syntax_highlight (char * code) {
@@ -208,18 +201,14 @@ char * syntax_highlight (char * code) {
 	for (offset = 0; offset < strlen (string); offset += length) {
 		select = syntax_loop (& string [offset], & length);
 
-		if (select >= syntax_count) {
-			strncat (buffer, "\033[1;31m", 7);
+		if (select < syntax_count) {
+			strncat (buffer, "\003", 1);
+			strncat (buffer, syntax_colour [select], 2);
+			strncat (buffer, & string [offset], (size_t) length);
+			strncat (buffer, "\017", 1);
 		} else {
-			char colour [8] = "\033[-;3-m";
-			colour [2] = syntax_effect [select];
-			colour [5] = syntax_colour [select];
-			strncat (buffer, colour, 7);
+			strncat (buffer, & string [offset], (size_t) length);
 		}
-
-		strncat (buffer, & string [offset], (size_t) length);
-
-		strncat (buffer, "\033[0m", 4);
 	}
 
 	return (buffer);
