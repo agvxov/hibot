@@ -21,7 +21,7 @@ HEADER   := config.inc version.inc log.h bot.h syntax.h
 HEADER   := $(addprefix ${SOURCE.d}, ${HEADER})
 
 ${OUT}: ${SOURCE} ${HEADER}
-	./${CC} ${CFLAGS} -o $@ ${SOURCE} ${LDLIBS}
+	${CC} ${CFLAGS} -o $@ ${SOURCE} ${LDLIBS}
 
 run: ${OUT}
 	./${OUT} irc.rizon.net:6665 "#/g/test"
