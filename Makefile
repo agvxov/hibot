@@ -22,7 +22,7 @@ HEADER   := $(addprefix ${SOURCE.d}, ${HEADER})
 ${OUT}: ${SOURCE} ${HEADER}
 	${CC} ${CFLAGS} -o $@ ${SOURCE} ${LDLIBS}
 
-run:
+run: ${OUT}
 	${OUT} irc.rizon.net:6665 "#/g/test"
 
 test: ${OUT}
@@ -30,8 +30,3 @@ test: ${OUT}
 
 clean:
 	-rm ${OUT}
-
-docs:
-	for i in documentation/*.md; do \
-		kramdown-man "$$i" -o documentation/manual/$$(basename -s .md $$i) ; \
-	done

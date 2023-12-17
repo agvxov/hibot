@@ -7,12 +7,27 @@ char * channel;
 char * server;
 char * port;
 
+typedef enum {
+	C,
+	ADA,
+} language_t;
+
+language_t language = ADA;
+
+typedef void (*syntax_setter_t)(void);
+
 #include <stdio.h>
 FILE * log_file;
 
 #include "log.h"
 #include "syntax.h"
 #include "bot.h"
+
+syntax_setter_t syntax_functions[] = {
+	[C]   = &syntax_c,
+	[ADA] = &syntax_ada,
+};
+
 
 const char help_message[] =
 	PROGRAM_NAME " <server>:<port> <channel>\n"
@@ -39,7 +54,7 @@ signed main(int argc, char * * argv) {
 
 	log_file = stdout;
 
-	syntax_c();
+	syntax_functions[language]();
 
 	connect_bot(server, port_i);
 	connection_loop();
