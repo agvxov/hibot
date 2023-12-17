@@ -6,7 +6,7 @@ ifeq ($(DEBUG), 1)
   CFLAGS += -Wall -Wextra -Wpedantic 
   CFLAGS += -DDEBUG -O0 -ggdb -fno-inline	
 else
-  CFLAGS += -O3 -fno-stack-protector -fno-exceptions -fno-rtti
+  CFLAGS += -O3 -fno-stack-protector -fno-rtti
 endif
 
 LDLIBS := -lircclient
@@ -17,14 +17,11 @@ OUT := hibot
 SOURCE.d := source/
 SOURCE   := main.c
 SOURCE   := $(addprefix ${SOURCE.d}, ${SOURCE})
-HEADER   := config.inc log.h bot.h
+HEADER   := config.inc version.inc log.h bot.h syntax.h
 HEADER   := $(addprefix ${SOURCE.d}, ${HEADER})
 
-${OUT}:
+${OUT}: ${SOURCE} ${HEADER}
 	${CC} ${CFLAGS} -o $@ ${SOURCE} ${LDLIBS}
-
-static: ${SOURCE} ${HEADER}
-	${CC} -static ${CFLAGS} $$(pkg-config --libs openssl) -o $@ ${SOURCE} ${LDLIBS}
 
 run: ${OUT}
 	${OUT} irc.rizon.net:6665 "#/g/test"
