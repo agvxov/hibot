@@ -27,7 +27,7 @@ syntax_setter_t syntax_functions[] = {
 
 
 const char help_message[] =
-	PROGRAM_NAME " <server>:<port> <channel>\n"
+	PROGRAM_NAME " <server>:<port> <channel>"
 ;
 
 signed main(int argc, char * * argv) {

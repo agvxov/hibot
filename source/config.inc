@@ -1,6 +1,6 @@
 #ifndef CONFIG_INC
 
-const char * const username                   = "hibot2"; //PROGRAM_NAME;
+const char * const username                   = PROGRAM_NAME;
 const char * const password                   = "";
 const int          message_timeout            = 3;
 const char * const message_queue_full_message = "Air space too crowded in this area.";
