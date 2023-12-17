@@ -16,9 +16,6 @@ language_t language = DEFAULT_LANGUAGE;
 
 typedef void (*syntax_setter_t)(void);
 
-#include <stdio.h>
-FILE * log_file;
-
 #include "log.h"
 #include "syntax.h"
 #include "bot.h"

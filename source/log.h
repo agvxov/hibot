@@ -2,6 +2,8 @@
 
 #include <stdio.h>
 
+FILE * log_file;
+
 static
 void log(const char * const message, const char * const color) {
 	fputs(color, log_file);
