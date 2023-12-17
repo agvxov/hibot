@@ -10,7 +10,7 @@ extern syntax_setter_t syntax_functions[];
 static irc_session_t * session;
 static irc_callbacks_t callbacks;
 
-void ircmsg(const char * const message) {
+void irc_message(const char * const message) {
 	irc_cmd_msg(session, channel, message);
 }
 
@@ -22,6 +22,22 @@ language_t translate_language(const char * const language) {
 		return ADA;
 	}
 	return -1;
+}
+
+static
+void irc_help() {
+	irc_message(PROGRAM_NAME " "
+#include "version.inc"
+				);
+	irc_message(PROGRAM_NAME " is a code highlighting IRC bot."
+					" You may direct message it with your code or commands."
+				);
+	irc_message("Syntax:");
+	irc_message("  !help               // print help");
+	irc_message("  !<language>         // set language for next message");
+	irc_message("  <code>              // echo this code");
+	irc_message("  !<language> <code>  // set language and echo code");
+	irc_message("--");
 }
 
 // XXX: msg ChanServ IDENTIFY?
@@ -59,6 +75,7 @@ void event_privmsg(irc_session_t * session,
 	char * terminator;
 	int is_code = 1;
 
+	/* Is command */
 	if (*message == '!') {
 		terminator = message;
 		while (*terminator != ' ') {
@@ -69,6 +86,12 @@ void event_privmsg(irc_session_t * session,
 			++terminator;
 		}
 		*terminator = '\0';
+		/* */
+		if (!strcmp(message, "!help")) {
+			irc_help();
+			goto END;
+		}
+		/* get language */
 		for (char * s = message + 1; *s != '\0'; s++) {
 			*s = toupper(*s);
 		}
@@ -76,29 +99,52 @@ void event_privmsg(irc_session_t * session,
 		message = terminator + 1;
 		if (l != -1) {
 			language = l;
+			syntax_count = 0;
 			syntax_functions[language]();
 		}
 	}
 
+	/* Is code */
 	if (is_code) {
 		char * buffer = (char *)origin;
 		while (*(buffer++) != '!') { ; }
 		asprintf(&buffer, "From %.*s:", (int)(buffer - origin)-1, origin);
-		ircmsg(buffer);
+		irc_message(buffer);
 		free(buffer);
 
-		ircmsg(syntax_highlight(message));
+		irc_message(syntax_highlight(message));
 
-		ircmsg("--");
+		irc_message("--");
 	}
 
+	END:
 	free(message_guard);
 }
+
+static
+void event_channel(irc_session_t * session,
+                   const char  * event,
+                   const char  * origin,
+                   const char ** params,
+                   unsigned int count) {
+	(void) session;
+	(void) event;
+	(void) origin;
+	(void) count;
+
+	const char * const message = params[1];
+
+	if (!strncmp(message, "!help", sizeof("!help")-1)) {
+		irc_help();
+	}
+}
+
 
 int connect_bot(const char * const server, const short port) {
 	memset(&callbacks, 0, sizeof(callbacks));
 	callbacks.event_connect = event_connect;
 	callbacks.event_privmsg = event_privmsg;
+	callbacks.event_channel = event_channel;
 	session = irc_create_session(&callbacks);
 
 	if (!session) {
