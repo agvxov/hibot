@@ -11,6 +11,7 @@ endif
 
 LDLIBS := -lircclient
 
+INSTALL_TARGET := /etc/init.d/hibot
 OUT := hibot
 
 SOURCE.d := source/
@@ -28,5 +29,9 @@ run: ${OUT}
 test: ${OUT}
 	${WRAP} ${OUT} irc.rizon.net:6665 "#/g/test"
 
+install:
+	m4 script/hibot.m4 > ${INSTALL_TARGET}
+
 clean:
 	-rm ${OUT}
+	-rm ${INSTALL_TARGET}
