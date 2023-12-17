@@ -6,7 +6,7 @@ ifeq ($(DEBUG), 1)
   CFLAGS += -Wall -Wextra -Wpedantic 
   CFLAGS += -DDEBUG -O0 -ggdb -fno-inline	
 else
-  CFLAGS += -O3 -fno-stack-protector -fno-rtti
+  CFLAGS += -O3 -fno-stack-protector
 endif
 
 LDLIBS := -lircclient
