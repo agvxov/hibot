@@ -20,8 +20,11 @@ SOURCE   := $(addprefix ${SOURCE.d}, ${SOURCE})
 HEADER   := config.inc log.h bot.h
 HEADER   := $(addprefix ${SOURCE.d}, ${HEADER})
 
-${OUT}: ${SOURCE} ${HEADER}
+${OUT}:
 	${CC} ${CFLAGS} -o $@ ${SOURCE} ${LDLIBS}
+
+static: ${SOURCE} ${HEADER}
+	${CC} -static ${CFLAGS} $$(pkg-config --libs openssl) -o $@ ${SOURCE} ${LDLIBS}
 
 run: ${OUT}
 	${OUT} irc.rizon.net:6665 "#/g/test"
@@ -31,6 +34,7 @@ test: ${OUT}
 
 install:
 	m4 script/hibot.m4 > ${INSTALL_TARGET}
+	chmod 755 ${INSTALL_TARGET}
 
 clean:
 	-rm ${OUT}
