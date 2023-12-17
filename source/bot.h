@@ -36,8 +36,8 @@ typedef struct {
 	char * user;
 	language_t language;
 	struct itimerval timer;
-	char * buffer[128];
-	unsigned int buffer_head;
+	char * buffer[128];			// XXX: no overflow detection/avertion
+	unsigned int buffer_head;   //       is implemented on this bunch
 } request_t;
 
 void init_request(request_t * request) {
