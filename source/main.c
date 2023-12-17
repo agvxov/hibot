@@ -12,7 +12,7 @@ typedef enum {
 	ADA,
 } language_t;
 
-language_t language = ADA;
+language_t language = DEFAULT_LANGUAGE;
 
 typedef void (*syntax_setter_t)(void);
 
@@ -52,7 +52,7 @@ signed main(int argc, char * * argv) {
 		goto USAGE_ERROR;
 	}
 
-	log_file = stdout;
+	log_file = LOG_FILE;
 
 	syntax_functions[language]();
 

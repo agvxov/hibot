@@ -7,8 +7,8 @@
 
 extern syntax_setter_t syntax_functions[];
 
-irc_session_t * session;
-irc_callbacks_t callbacks;
+static irc_session_t * session;
+static irc_callbacks_t callbacks;
 
 void ircmsg(const char * const message) {
 	irc_cmd_msg(session, channel, message);
@@ -25,6 +25,7 @@ language_t translate_language(const char * const language) {
 }
 
 // XXX: msg ChanServ IDENTIFY?
+static
 void event_connect(irc_session_t * session,
 							const char	* event,
 							const char	* origin,
@@ -43,6 +44,7 @@ void event_connect(irc_session_t * session,
 	free(buffer);
 }
 
+static
 void event_privmsg(irc_session_t * session,
                    const char  * event,
                    const char  * origin,
