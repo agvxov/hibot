@@ -49,6 +49,7 @@ void init_request(request_t * request) {
 	request->buffer_head = 0;
 }
 
+request_t   request_queue__[message_queue_size];
 request_t * request_queue[message_queue_size];
 unsigned int request_queue_head = 0;
 
@@ -90,7 +91,7 @@ request_t * take_request(const char * const user, language_t language) {
 	++request_queue_head;
 
 	char * log_message;
-	asprintf(&log_message, "Took message: %p (%d)\n", (void*)request, request_queue_head);
+	asprintf(&log_message, "Took message: %p (%d)", (void*)request, request_queue_head);
 	log_notice(log_message);
 	free(log_message);
 
@@ -123,7 +124,7 @@ void drop_reqest() {
 	}
 
 	char * log_message;
-	asprintf(&log_message, "Dropped message: %p (%d)\n", (void*)request, request_queue_head);
+	asprintf(&log_message, "Dropped message: %p (%d)", (void*)request, request_queue_head);
 	log_notice(log_message);
 	free(log_message);
 }
@@ -281,7 +282,7 @@ int connect_bot(const char * const server, const short port) {
 	}
 
 	for (unsigned int i = 0; i < message_queue_size; i++) {
-		request_queue[i] = (request_t*)malloc(sizeof(request_t));
+		request_queue[i] = &request_queue__[i];
 		init_request(request_queue[i]);
 	}
 	signal(SIGALRM, on_message_timeout);
