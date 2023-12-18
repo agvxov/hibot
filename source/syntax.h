@@ -1,6 +1,6 @@
 #include <string.h>
 
-#define SYNTAX_LIMIT (144)
+#define SYNTAX_LIMIT (256)
 
 #define COLOUR_WHITE   ("00")
 #define COLOUR_BLUE    ("02")
@@ -185,6 +185,123 @@ void syntax_ada (void) {
 	syntax_rule (1, 1, "0123456789",                 separators, '\0', COLOUR_PINK);
 	syntax_rule (1, 1, "abcdefghijklmnopqrstuvwxyz", separators, '\0', COLOUR_WHITE);
 	syntax_rule (1, 1, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", separators, '\0', COLOUR_WHITE);
+}
+
+void syntax_cpp (void) {
+	char * separators = ".,:;<=>+-*/%!&~^?|()[]{}'\" \t\r\n";
+
+	char * keywords [] = {
+		"alignas",          "alignof",          "and",              "and_eq",           "asm",              "atomic_cancel",    "atomic_commit",    "atomic_noexcept",
+		"auto",             "bitand",           "bitor",            "bool",             "break",            "case",             "catch",            "char",
+		"char8_t",          "char16_t",         "char32_t",         "class",            "compl",            "concept",          "const",            "consteval",
+		"constexpr",        "constinit",        "const_cast",       "continue",         "co_await",         "co_return",        "co_yield",         "decltype",
+		"default",          "delete",           "do",               "double",           "dynamic_cast",     "else",             "enum",             "explicit",
+		"export",           "extern",           "false",            "float",            "for",              "friend",           "goto",             "if",
+		"inline",           "int",              "long",             "mutable",          "namespace",        "new",              "noexcept",         "not",
+		"not_eq",           "nullptr",          "operator",         "or",               "or_eq",            "private",          "protected",        "public",
+		"reflexpr",         "register",         "reinterpret_cast", "requires",         "return",           "short",            "signed",           "sizeof",
+		"static",           "static_assert",    "static_cast",      "struct",           "switch",           "synchronized",     "template",         "this",
+		"thread_local",     "throw",            "true",             "try",              "typedef",          "typeid",           "typename",         "union",
+		"unsigned",         "using",            "virtual",          "void",             "volatile",         "wchar_t",          "while",            "xor",
+		"xor_eq",           "final",            "override",         "import",           "module",           "transaction_safe"
+	};
+
+	char * specials [] = {
+		"int8_t",           "int16_t",          "int32_t",          "int64_t",          "uint8_t",           "uint16_t",          "uint32_t",          "uint64_t",
+		"FILE",             "std",              "typeof",           "cout",             "cin",               "endl",              "timespec",          "tm"
+		/* TODO: I don't really care about this, but some people do, Anon please add what you find interesting in here... */
+	};
+
+	size_t word;
+
+	syntax_rule (0, 0, "/*", "*/", '\0', COLOUR_GREY);
+	syntax_rule (0, 0, "//", "\n", '\0', COLOUR_GREY);
+	syntax_rule (0, 0, "#",  "\n", '\\', COLOUR_YELLOW);
+	syntax_rule (0, 0, "'",  "'",  '\\', COLOUR_PINK);
+	syntax_rule (0, 0, "\"", "\"", '\\', COLOUR_PINK);
+
+	for (word = 0; word != sizeof (keywords) / sizeof (keywords [0]); ++word) {
+		syntax_rule (0, 1, keywords [word], separators, '\0', COLOUR_YELLOW);
+	}
+
+	for (word = 0; word != sizeof (specials) / sizeof (specials [0]); ++word) {
+		syntax_rule (0, 1, specials [word], separators, '\0', COLOUR_CYAN);
+	}
+
+	syntax_rule (1, 0, "()[]{}",             "", '\0', COLOUR_BLUE);
+	syntax_rule (1, 0, ".,:;<=>+*-/%!&~^?|", "", '\0', COLOUR_CYAN);
+
+	syntax_rule (1, 1, "0123456789",                 separators, '\0', COLOUR_PINK);
+	syntax_rule (1, 1, "abcdefghijklmnopqrstuvwxyz", separators, '\0', COLOUR_WHITE);
+	syntax_rule (1, 1, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", separators, '\0', COLOUR_WHITE);
+	syntax_rule (1, 1, "_",                          separators, '\0', COLOUR_WHITE);
+}
+
+void syntax_fasm (void) {
+	char * separators = ".,+-=:;(){}[]%$<> \t\r\n";
+
+	char * instructions [] = {
+		"mov",              "movabs",           "movapd",           "movaps",           "movebe",           "movsd",            "movsx",            "movzx",
+		"movsxd",           "movd",             "movq",             "movs",             "movsb",            "movsw",            "movsd",            "movsq",
+		"cmovmp",           "cmovrcxz",         "cmovc",            "cmovnc",           "cmove",            "cmovne",           "cmovz",            "cmovnz",
+		"cmovg",            "cmovng",           "cmovge",           "cmovnge",          "cmovl",            "cmovnl",           "cmovle",           "cmovnle",
+		"cmova",            "cmovna",           "cmovae",           "cmovnae",          "cmovb",            "cmovnb",           "cmovbe",           "cmovnbe",
+		"cmovs",            "cmovns",           "cmovo",            "cmovno",           "cmovp",            "cmovnp",           "cmovpo",           "cmovpe",
+		"cmp",              "cmps",             "cmpsb",            "cmpsw",            "cmpsd",            "cmpsq",            "cmpxchg",          "lea",
+		"monitor",          "cpuid",            "in",               "out",              "syscall",          "sysenter",         "sysret",           "sysexit",
+		"swap",             "bswap",            "pop",              "push",             "call",             "ret",              "enter",            "leave",
+		"and",              "or",               "not",              "neg",              "sal",              "sar",              "shl",              "shr",
+		"inc",              "dec",              "add",              "sub",              "mul",              "div",              "imul",             "idiv",
+		"nop",              "fnop",             "adc",              "sbb",              "aaa",              "aas",              "aam",              "aad",
+		"jmp",              "jrcxz",            "jc",               "jnc",              "je",               "jne",              "jz",               "jnz",
+		"jg",               "jng",              "jge",              "jnge",             "jl",               "jnl",              "jle",              "jnle",
+		"ja",               "jna",              "jae",              "jnae",             "jb",               "jnb",              "jbe",              "jnbe",
+		"js",               "jns",              "jo",               "jno",              "jp",               "jnp",              "jpo",              "jpe",
+		"rep",              "repe",             "repz",             "repne",            "repnz",            "loop",             "loope",            "loopne"
+	};
+
+	char * registers [] = {
+		"rax",              "rcx",              "rdx",              "rbx",              "rsp",              "rbp",              "rsi",              "rdi",
+		"r8",               "r9",               "r10",              "r11",              "r12",              "r13",              "r14",              "r15",
+		"eax",              "ecx",              "edx",              "ebx",              "esp",              "ebp",              "esi",              "edi",
+		"r8d",              "r9d",              "r10d",             "r11d",             "r12d",             "r13d",             "r14d",             "r15d",
+		"ax",               "cx",               "dx",               "bx",               "sp",               "bp",               "si",               "di",
+		"r8w",              "r9w",              "r10w",             "r11w",             "r12w",             "r13w",             "r14w",             "r15w",
+		"al",               "cl",               "dl",               "bl",               "spl",              "bpl",              "sil",              "dil",
+		"r8b",              "r9b",              "r10b",             "r11b",             "r12b",             "r13b",             "r14b",             "r15b",
+		"ah",               "ch",               "dh",               "bh"
+	};
+
+	char * keywords [] = {
+		"format",           "executable",       "readable",         "writable",         "segment",          "sector",           "entry",            "macro",
+		"db",               "dw",               "dd",               "dq",               "rb",               "rw",               "rd",               "rq"
+	};
+
+	size_t word;
+
+	syntax_rule (0, 0, ";",  "\n", '\0', COLOUR_GREY);
+	syntax_rule (0, 0, "'",  "'",  '\\', COLOUR_PINK);
+	syntax_rule (0, 0, "\"", "\"", '\\', COLOUR_PINK);
+
+	for (word = 0; word != sizeof (instructions) / sizeof (instructions [0]); ++word) {
+		syntax_rule (0, 1, instructions [word], separators, '\0', COLOUR_YELLOW);
+	}
+
+	for (word = 0; word != sizeof (registers) / sizeof (registers [0]); ++word) {
+		syntax_rule (0, 1, registers [word], separators, '\0', COLOUR_CYAN);
+	}
+
+	for (word = 0; word != sizeof (keywords) / sizeof (keywords [0]); ++word) {
+		syntax_rule (0, 1, keywords [word], separators, '\0', COLOUR_YELLOW);
+	}
+
+	syntax_rule (1, 0, "()[]{}",      "", '\0', COLOUR_BLUE);
+	syntax_rule (1, 0, ".,+-=:;%$<>", "", '\0', COLOUR_CYAN);
+
+	syntax_rule (1, 1, "0123456789",                 separators, '\0', COLOUR_PINK);
+	syntax_rule (1, 1, "abcdefghijklmnopqrstuvwxyz", separators, '\0', COLOUR_WHITE);
+	syntax_rule (1, 1, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", separators, '\0', COLOUR_WHITE);
+	syntax_rule (1, 1, "_",                          separators, '\0', COLOUR_WHITE);
 }
 
 char * syntax_highlight (char * code) {
