@@ -12,3 +12,4 @@ applying simple syntax highlighting rules.
 ### Supported languages:
 + Ada
 + C/C++
++ Fasm

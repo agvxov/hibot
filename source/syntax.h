@@ -14,8 +14,10 @@
 #define COLOUR_PINK    ("13")
 #define COLOUR_GREY    ("14")
 
-extern void syntax_c   (void);
-extern void syntax_ada (void);
+extern void syntax_c    (void);
+extern void syntax_ada  (void);
+extern void syntax_cpp  (void);
+extern void syntax_fasm (void);
 
 extern char * syntax_highlight (char * string);
 

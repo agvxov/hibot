@@ -140,8 +140,12 @@ void on_message_timeout(int unused) {
 
 static
 language_t translate_language(const char * const language) {
-	if (!strcmp(language, "C") || !strcmp(language, "C++")) {
+	if (!strcmp(language, "C")) {
 		return C;
+	} else if (!strcmp(language, "C++") || !strcmp(language, "CPP")) {
+		return CPP;
+	} else if (!strcmp(language, "ASM") || !strcmp(language, "FASM") || !strcmp(language, "ASSEMBLY")) {
+		return ASM;
 	} else if (!strcmp(language, "ADA")) {
 		return ADA;
 	}

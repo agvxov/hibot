@@ -9,6 +9,8 @@ char * port;
 
 typedef enum {
 	C,
+	CPP,
+	ASM,
 	ADA,
 } language_t;
 
@@ -22,6 +24,8 @@ typedef void (*syntax_setter_t)(void);
 
 syntax_setter_t syntax_functions[] = {
 	[C]   = &syntax_c,
+	[CPP] = &syntax_cpp,
+	[ASM] = &syntax_fasm,
 	[ADA] = &syntax_ada,
 };
 
