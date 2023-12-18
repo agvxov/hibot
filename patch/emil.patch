@@ -1,0 +1,1524 @@
+From 0a48ebe68bf2750ae2c8045c6341ebd3184d5e2c Mon Sep 17 00:00:00 2001
+From: Emil Williams <emilwilliams@tuta.io>
+Date: Mon, 18 Dec 2023 21:48:58 +0000
+Subject: [PATCH] updoot
+
+---
+ Makefile          |  47 ++++---
+ source/bot.c      | 306 +++++++++++++++++++++++++++++++++++++++++++
+ source/bot.h      | 299 +-----------------------------------------
+ source/config.inc |  13 +-
+ source/log.c      |  19 +++
+ source/log.h      |  19 +--
+ source/main.c     |  27 +---
+ source/syntax.c   | 322 +++++++++++++++++++++++++++++++++++++++++++++
+ source/syntax.h   | 324 +++-------------------------------------------
+ 9 files changed, 710 insertions(+), 666 deletions(-)
+ create mode 100644 source/bot.c
+ create mode 100644 source/log.c
+ create mode 100644 source/syntax.c
+
+diff --git a/Makefile b/Makefile
+index cfc8215..49019a9 100644
+--- a/Makefile
++++ b/Makefile
+@@ -1,38 +1,43 @@
+-.PHONY: clean run test
++INSTALL_TARGET := /etc/init.d/hibot
++OUT := hibot
++
++WRAP     := valgrind --track-origins=yes --leak-check=full --show-leak-kinds=all
++CFLAGS   += -std=gnu99 -fno-builtin
++CPPFLAGS += -DPROGRAM_NAME=\"${OUT}\" -D_GNU_SOURCE -I/usr/include/libircclient/
++LDLIBS   := -lircclient
+ 
+-WRAP   := valgrind --track-origins=yes --leak-check=full --show-leak-kinds=all 
+-CFLAGS += -fno-builtin -I/usr/include/libircclient/
+ ifeq ($(DEBUG), 1)
+-  CFLAGS += -Wall -Wextra -Wpedantic 
+-  CFLAGS += -DDEBUG -O0 -ggdb -fno-inline	
++  CFLAGS   += -Wall -Wextra -Wpedantic -O0 -ggdb -fno-inline
++  CPPFLAGS += -DDEBUG
+ else
+   CFLAGS += -O3 -fno-stack-protector
+ endif
+ 
+-LDLIBS := -lircclient
+-
+-INSTALL_TARGET := /etc/init.d/hibot
+-OUT := hibot
+-
+ SOURCE.d := source/
+-SOURCE   := main.c
+-SOURCE   := $(addprefix ${SOURCE.d}, ${SOURCE})
++SOURCE   := main.c syntax.c bot.c log.c
++OBJECT   := $(addprefix ${SOURCE.d}, ${SOURCE:.c=.o})
+ HEADER   := config.inc version.inc log.h bot.h syntax.h
+ HEADER   := $(addprefix ${SOURCE.d}, ${HEADER})
+ 
+-${OUT}: ${SOURCE} ${HEADER}
+-	${CC} ${CFLAGS} -o $@ ${SOURCE} ${LDLIBS}
++CC := ${CC} ${CFLAGS}
+ 
+-run: ${OUT}
+-	./${OUT} irc.rizon.net:6665 "#/g/test"
++%.o: %.c
++	${CC} ${CPPFLAGS} -c -o $@ $<
+ 
+-test: ${OUT}
+-	${WRAP} ${OUT} irc.rizon.net:6665 "#/g/test"
++${OUT}: ${HEADER} | ${OBJECT}
++	${CC} -flto=auto -o $@ $| ${LDLIBS}
++
++clean:
++	${RM} ${OBJECT} ${OUT} ${INSTALL_TARGET}
+ 
+ install:
+ 	m4 script/hibot.m4 > ${INSTALL_TARGET}
+ 	chmod 755 ${INSTALL_TARGET}
+ 
+-clean:
+-	-rm ${OUT}
+-	-rm ${INSTALL_TARGET}
++run: ${OUT}
++	./${OUT} irc.rizon.net:6665 "#/g/test"
++
++test: ${OUT}
++	${WRAP} ${OUT} irc.rizon.net:6665 "#/g/test"
++
++.PHONY: clean run test install
+diff --git a/source/bot.c b/source/bot.c
+new file mode 100644
+index 0000000..2bfe0ae
+--- /dev/null
++++ b/source/bot.c
+@@ -0,0 +1,306 @@
++#include "log.h"
++#include "bot.h"
++#include "syntax.h"
++#include "config.inc"
++
++#include <stdio.h>
++
++char * channel;
++char * server;
++char * port;
++
++static inline
++void irc_message(const char * const message) {
++	irc_cmd_msg(session, channel, message);
++}
++
++static inline
++void irc_private_message(const char * const user, const char * const message) {
++	irc_cmd_msg(session, user, message);
++}
++
++static inline
++char * username_root(const char * const fullname){
++	char * r = (char *)fullname;
++	while (*(r++) != '!') { ; }
++	asprintf(&r, "From %.*s:", (int)(r - fullname)-1, fullname);
++	return r;
++}
++
++typedef struct {
++	int is_active;
++	char * user;
++	language_t language;
++	struct itimerval timer;
++	char * buffer[128];			// XXX: no overflow detection/avertion
++	unsigned int buffer_head;   //       is implemented on this bunch
++} request_t;
++
++void init_request(request_t * request) {
++	request->is_active = 0;
++	request->timer.it_value.tv_sec     = 0;
++	request->timer.it_value.tv_usec    = 0;
++	request->timer.it_interval.tv_sec  = 0;
++	request->timer.it_interval.tv_usec = 0;
++	request->buffer_head = 0;
++}
++
++request_t   request_queue__[message_queue_size];
++request_t * request_queue[message_queue_size];
++unsigned int request_queue_head = 0;
++
++static inline
++void touch_request_timer(request_t * request) {
++	request->timer.it_value.tv_sec = message_timeout;
++	setitimer(ITIMER_REAL, &(request->timer), NULL);
++}
++
++void activate_request(request_t * request) {
++	request->is_active = 1;
++
++	/* message header */
++	char * short_name = username_root(request->user);
++	irc_message(short_name);
++	free(short_name);
++}
++
++request_t * take_request(const char * const user, language_t language) {
++	for (unsigned int i = 0; i < request_queue_head; i++) {
++		if(!strcmp(request_queue[i]->user, user)) {
++			return request_queue[i];
++		}
++	}
++
++	if (request_queue_head == message_queue_size) {
++		return NULL;
++	}
++
++	request_t * request = request_queue[request_queue_head];
++
++	request->language  = language;
++	request->user      = strdup(user);
++
++	if (request_queue_head == 0) {
++		activate_request(request);
++	}
++
++	++request_queue_head;
++
++	char * log_message;
++	asprintf(&log_message, "Took message: %p (%d)", (void*)request, request_queue_head);
++	log_notice(log_message);
++	free(log_message);
++
++	return request;
++}
++
++void drop_reqest() {
++	request_t * request = request_queue[0];
++
++	if (message_queue_size > 1) {
++		for (unsigned int i = 0; i < request_queue_head; i++) {
++			request_queue[i] = request_queue[i+1];
++		}
++		request_queue[request_queue_head] = request;
++	}
++
++	--request_queue_head;
++
++	request->is_active = 0;
++	free(request->user);
++
++	if (request_queue_head) {
++		activate_request(request_queue[0]);
++		for (unsigned int i = 0; i < request_queue[0]->buffer_head; i++) {
++			irc_message(request_queue[0]->buffer[i]);
++			free(request_queue[0]->buffer[i]);
++		}
++		request_queue[0]->buffer_head = 0;
++		touch_request_timer(request_queue[0]);
++	}
++
++	char * log_message;
++	asprintf(&log_message, "Dropped message: %p (%d)", (void*)request, request_queue_head);
++	log_notice(log_message);
++	free(log_message);
++}
++
++void on_message_timeout(int unused) {
++	(void)unused;
++
++	/* message footer */
++	irc_message("--");
++
++	drop_reqest(request_queue);
++}
++
++static
++language_t translate_language(const char * const language) {
++	if (!strcmp(language, "C") || !strcmp(language, "C++")) {
++		return C;
++	} else if (!strcmp(language, "ADA")) {
++		return ADA;
++	}
++	return -1;
++}
++
++static
++void irc_help() {
++	irc_message(PROGRAM_NAME " "
++#include "version.inc"
++				);
++	irc_message(PROGRAM_NAME " is a code highlighting IRC bot."
++					" You may direct message it with your code or commands."
++				);
++	irc_message("Syntax:");
++	irc_message("  !help               // print help");
++	irc_message("  !<language>         // set language for next message");
++	irc_message("  <code>              // echo this code");
++	irc_message("  !<language> <code>  // set language and echo code");
++	irc_message("--");
++}
++
++// XXX: msg ChanServ IDENTIFY?
++static
++void event_connect(irc_session_t  * session,
++                   const char     * event,
++                   const char     * origin,
++                   const char    ** params,
++                   unsigned int     count) {
++	(void)event;
++	(void)origin;
++	(void)params;
++	(void)count;
++
++	log_notice("IRC connection secured.");
++	irc_cmd_join(session, channel, 0);
++	char * buffer;
++	asprintf(&buffer, "Joined destination channel: `%s`.", channel);
++	log_notice(buffer);
++	free(buffer);
++}
++
++static
++void event_privmsg(irc_session_t * session,
++                   const char  * event,
++                   const char  * origin,
++                   const char ** params,
++                   unsigned int count) {
++	(void)session;
++	(void)event;
++	(void)count;
++
++	char * const message_guard = strdup(params[1]);
++	char *       message       = message_guard;
++	char *       terminator;
++
++	int is_code = 1;
++
++	/* Is command */
++	if (*message == '!') {
++		terminator = message;
++		while (*terminator != ' ') {
++			if (*terminator == '\0') {
++				is_code = 0;
++				break;
++			}
++			++terminator;
++		}
++		*terminator = '\0';
++		/* */
++		if (!strcmp(message, "!help")) {
++			irc_help();
++			goto END;
++		}
++		/* get language */
++		for (char * s = message + 1; *s != '\0'; s++) {
++			*s = toupper(*s);
++		}
++		int l = translate_language(message + 1);
++		message = terminator + 1;
++		if (l != -1) {
++			language = l;
++			syntax_count = 0;
++			syntax_functions[language]();
++		}
++	}
++
++	/* Is code */
++	if (is_code) {
++		request_t * request = take_request(origin, language);
++		if (!request) {
++			irc_private_message(origin, message_queue_full_message);
++			goto END;
++		}
++
++		if (request->is_active) {
++			touch_request_timer(request);
++			irc_message(syntax_highlight(message));
++		} else {
++			request->buffer[request->buffer_head++] = strdup(syntax_highlight(message));
++		}
++	}
++
++	END:
++	free(message_guard);
++}
++
++static
++void event_channel(irc_session_t * session,
++                   const char  * event,
++                   const char  * origin,
++                   const char ** params,
++                   unsigned int count) {
++	(void) session;
++	(void) event;
++	(void) origin;
++	(void) count;
++
++	const char * const message = params[1];
++
++	if (!strncmp(message, "!help", sizeof("!help")-1)) {
++		irc_help();
++	}
++}
++
++
++int connect_bot(const char * const server, const short port) {
++	memset(&callbacks, 0, sizeof(callbacks));
++	callbacks.event_connect = event_connect;
++	callbacks.event_privmsg = event_privmsg;
++	callbacks.event_channel = event_channel;
++	session = irc_create_session(&callbacks);
++
++	if (!session) {
++		log_error("Error creating IRC session.");
++		return 1;
++	} else {
++		log_notice("IRC Session initialized.");
++	}
++
++	for (unsigned int i = 0; i < message_queue_size; i++) {
++		request_queue[i] = &request_queue__[i];
++		init_request(request_queue[i]);
++	}
++	signal(SIGALRM, on_message_timeout);
++
++	irc_connect(session,
++	            server,
++	            port,
++	            config_password,
++	            config_username,
++	            config_username,
++	            config_username
++	);
++
++	return 0;
++}
++
++int connection_loop(void) {
++	if (irc_run(session) != 0) {
++		log_error("Error running IRC session\n"
++		          "Possible issue: bad URL, no network connection,"
++		          "bad port, or refused connection.");
++	}
++	return 0;
++}
+diff --git a/source/bot.h b/source/bot.h
+index 76d5512..c89987c 100644
+--- a/source/bot.h
++++ b/source/bot.h
+@@ -8,304 +8,19 @@
+ #include <signal.h>
+ #include <sys/time.h>
+ 
++#include "syntax.h"
++
+ extern syntax_setter_t syntax_functions[];
+ 
+ static irc_session_t * session;
+ static irc_callbacks_t callbacks;
+ 
+-static inline
+-void irc_message(const char * const message) {
+-	irc_cmd_msg(session, channel, message);
+-}
+-
+-static inline
+-void irc_private_message(const char * const user, const char * const message) {
+-	irc_cmd_msg(session, user, message);
+-}
+-
+-static inline
+-char * username_root(const char * const fullname){
+-	char * r = (char *)fullname;
+-	while (*(r++) != '!') { ; }
+-	asprintf(&r, "From %.*s:", (int)(r - fullname)-1, fullname);
+-	return r;
+-}
+-
+-typedef struct {
+-	int is_active;
+-	char * user;
+-	language_t language;
+-	struct itimerval timer;
+-	char * buffer[128];			// XXX: no overflow detection/avertion
+-	unsigned int buffer_head;   //       is implemented on this bunch
+-} request_t;
+-
+-void init_request(request_t * request) {
+-	request->is_active = 0;
+-	request->timer.it_value.tv_sec     = 0;
+-	request->timer.it_value.tv_usec    = 0;
+-	request->timer.it_interval.tv_sec  = 0;
+-	request->timer.it_interval.tv_usec = 0;
+-	request->buffer_head = 0;
+-}
+-
+-request_t   request_queue__[message_queue_size];
+-request_t * request_queue[message_queue_size];
+-unsigned int request_queue_head = 0;
+-
+-static inline
+-void touch_request_timer(request_t * request) {
+-	request->timer.it_value.tv_sec = message_timeout;
+-	setitimer(ITIMER_REAL, &(request->timer), NULL);
+-}
+-
+-void activate_request(request_t * request) {
+-	request->is_active = 1;
+-
+-	/* message header */
+-	char * short_name = username_root(request->user);
+-	irc_message(short_name);
+-	free(short_name);
+-}
+-
+-request_t * take_request(const char * const user, language_t language) {
+-	for (unsigned int i = 0; i < request_queue_head; i++) {
+-		if(!strcmp(request_queue[i]->user, user)) {
+-			return request_queue[i];
+-		}
+-	}
+-
+-	if (request_queue_head == message_queue_size) {
+-		return NULL;
+-	}
+-
+-	request_t * request = request_queue[request_queue_head];
+-
+-	request->language  = language;
+-	request->user      = strdup(user);
+-
+-	if (request_queue_head == 0) {
+-		activate_request(request);
+-	}
+-
+-	++request_queue_head;
+-
+-	char * log_message;
+-	asprintf(&log_message, "Took message: %p (%d)", (void*)request, request_queue_head);
+-	log_notice(log_message);
+-	free(log_message);
+-
+-	return request;
+-}
+-
+-void drop_reqest() {
+-	request_t * request = request_queue[0];
+-
+-	if (message_queue_size > 1) {
+-		for (unsigned int i = 0; i < request_queue_head; i++) {
+-			request_queue[i] = request_queue[i+1];
+-		}
+-		request_queue[request_queue_head] = request;
+-	}
+-	
+-	--request_queue_head;
+-
+-	request->is_active = 0;
+-	free(request->user);
+-
+-	if (request_queue_head) {
+-		activate_request(request_queue[0]);
+-		for (unsigned int i = 0; i < request_queue[0]->buffer_head; i++) {
+-			irc_message(request_queue[0]->buffer[i]);
+-			free(request_queue[0]->buffer[i]);
+-		}
+-		request_queue[0]->buffer_head = 0;
+-		touch_request_timer(request_queue[0]);
+-	}
+-
+-	char * log_message;
+-	asprintf(&log_message, "Dropped message: %p (%d)", (void*)request, request_queue_head);
+-	log_notice(log_message);
+-	free(log_message);
+-}
+-
+-void on_message_timeout(int unused) {
+-	(void)unused;
+-
+-	/* message footer */
+-	irc_message("--");
+-
+-	drop_reqest(request_queue);
+-}
+-
+-static
+-language_t translate_language(const char * const language) {
+-	if (!strcmp(language, "C") || !strcmp(language, "C++")) {
+-		return C;
+-	} else if (!strcmp(language, "ADA")) {
+-		return ADA;
+-	}
+-	return -1;
+-}
+-
+-static
+-void irc_help() {
+-	irc_message(PROGRAM_NAME " "
+-#include "version.inc"
+-				);
+-	irc_message(PROGRAM_NAME " is a code highlighting IRC bot."
+-					" You may direct message it with your code or commands."
+-				);
+-	irc_message("Syntax:");
+-	irc_message("  !help               // print help");
+-	irc_message("  !<language>         // set language for next message");
+-	irc_message("  <code>              // echo this code");
+-	irc_message("  !<language> <code>  // set language and echo code");
+-	irc_message("--");
+-}
+-
+-// XXX: msg ChanServ IDENTIFY?
+-static
+-void event_connect(irc_session_t * session,
+-							const char	* event,
+-							const char	* origin,
+-							const char ** params,
+-							unsigned int count) {
+-	(void)event;
+-	(void)origin;
+-	(void)params;
+-	(void)count;
+-
+-	log_notice("IRC connection secured.");
+-	irc_cmd_join(session, channel, 0);
+-	char * buffer;
+-	asprintf(&buffer, "Joined destination channel: `%s`.", channel);
+-	log_notice(buffer);
+-	free(buffer);
+-}
+-
+-static
+-void event_privmsg(irc_session_t * session,
+-                   const char  * event,
+-                   const char  * origin,
+-                   const char ** params,
+-                   unsigned int count) {
+-	(void)session;
+-	(void)event;
+-	(void)count;
+-
+-	char * const message_guard = strdup(params[1]);
+-	char *       message       = message_guard;
+-	char * terminator;
+-	int is_code = 1;
+-
+-	/* Is command */
+-	if (*message == '!') {
+-		terminator = message;
+-		while (*terminator != ' ') {
+-			if (*terminator == '\0') {
+-				is_code = 0;
+-				break;
+-			}
+-			++terminator;
+-		}
+-		*terminator = '\0';
+-		/* */
+-		if (!strcmp(message, "!help")) {
+-			irc_help();
+-			goto END;
+-		}
+-		/* get language */
+-		for (char * s = message + 1; *s != '\0'; s++) {
+-			*s = toupper(*s);
+-		}
+-		int l = translate_language(message + 1);
+-		message = terminator + 1;
+-		if (l != -1) {
+-			language = l;
+-			syntax_count = 0;
+-			syntax_functions[language]();
+-		}
+-	}
+-
+-	/* Is code */
+-	if (is_code) {
+-		request_t * request = take_request(origin, language);
+-		if (!request) {
+-			irc_private_message(origin, message_queue_full_message);
+-			goto END;
+-		}
+-
+-		if (request->is_active) {
+-			touch_request_timer(request);
+-			irc_message(syntax_highlight(message));
+-		} else {
+-			request->buffer[request->buffer_head++] = strdup(syntax_highlight(message));
+-		}
+-	}
+-
+-	END:
+-	free(message_guard);
+-}
+-
+-static
+-void event_channel(irc_session_t * session,
+-                   const char  * event,
+-                   const char  * origin,
+-                   const char ** params,
+-                   unsigned int count) {
+-	(void) session;
+-	(void) event;
+-	(void) origin;
+-	(void) count;
+-
+-	const char * const message = params[1];
+-
+-	if (!strncmp(message, "!help", sizeof("!help")-1)) {
+-		irc_help();
+-	}
+-}
+-
+-
+-int connect_bot(const char * const server, const short port) {
+-	memset(&callbacks, 0, sizeof(callbacks));
+-	callbacks.event_connect = event_connect;
+-	callbacks.event_privmsg = event_privmsg;
+-	callbacks.event_channel = event_channel;
+-	session = irc_create_session(&callbacks);
+-
+-	if (!session) {
+-		log_error("Error creating IRC session.");
+-		return 1;
+-	} else {
+-		log_notice("IRC Session initialized.");
+-	}
+-
+-	for (unsigned int i = 0; i < message_queue_size; i++) {
+-		request_queue[i] = &request_queue__[i];
+-		init_request(request_queue[i]);
+-	}
+-	signal(SIGALRM, on_message_timeout);
+-
+-	irc_connect(session,
+-	            server,
+-	            port,
+-	            password,
+-	            username,
+-	            username,
+-	            username
+-	);
+-
+-	return 0;
+-}
++extern char * channel;
++extern char * server;
++extern char * port;
+ 
+-int connection_loop(void) {
+-	if (irc_run(session) != 0) {
+-		log_error("Error running IRC session\n"
+-			"Possible issue: bad URL, no network connection, bad port, refused connection.");
+-	}
+-	return 0;
+-}
++extern int connect_bot(const char * const server, const short port);
++extern int connection_loop(void);
+ 
+ #define BOT_H
+ #endif
+diff --git a/source/config.inc b/source/config.inc
+index a9de7c4..3ae29a3 100644
+--- a/source/config.inc
++++ b/source/config.inc
+@@ -1,12 +1,17 @@
+ #ifndef CONFIG_INC
+ 
+-const char * const username                   = PROGRAM_NAME;
+-const char * const password                   = "";
+-const int          message_timeout            = 3;
+-const char * const message_queue_full_message = "Air space too crowded in this area.";
++#ifndef PROGRAM_NAME
++# define PROGRAM_NAME "hibot"
++#endif
++
+ #define message_queue_size    3
+ #define DEFAULT_LANGUAGE      C
+ #define LOG_FILE              stdout
+ 
++#define config_username            PROGRAM_NAME
++#define config_password            ""
++#define message_timeout            3
++#define message_queue_full_message "Air space too crowded in this area."
++
+ #define CONFIG_INC
+ #endif
+diff --git a/source/log.c b/source/log.c
+new file mode 100644
+index 0000000..9e9c078
+--- /dev/null
++++ b/source/log.c
+@@ -0,0 +1,19 @@
++#include "log.h"
++
++FILE * log_file;
++
++static
++void log(const char * const message, const char * const color) {
++	fputs(color, log_file);
++	fputs(message, log_file);
++	fputs("\033[0m\n", log_file);
++	fflush(log_file);
++}
++
++void log_notice(const char * const message) {
++	log("", message);
++}
++
++void log_error(const char * const message) {
++	log("\033[33m", message);
++}
+diff --git a/source/log.h b/source/log.h
+index 8e894b9..f983bc3 100644
+--- a/source/log.h
++++ b/source/log.h
+@@ -2,23 +2,10 @@
+ 
+ #include <stdio.h>
+ 
+-FILE * log_file;
++extern FILE * log_file;
+ 
+-static
+-void log(const char * const message, const char * const color) {
+-	fputs(color, log_file);
+-	fputs(message, log_file);
+-	fputs("\033[0m\n", log_file);
+-	fflush(log_file);
+-}
+-
+-void log_notice(const char * const message) {
+-	log("", message);
+-}
+-
+-void log_error(const char * const message) {
+-	log("\033[33m", message);
+-}
++extern void log_notice(const char * const message);
++extern void log_error(const char * const message);
+ 
+ #define LOG_H
+ #endif
+diff --git a/source/main.c b/source/main.c
+index c8d1872..33d4ade 100644
+--- a/source/main.c
++++ b/source/main.c
+@@ -1,31 +1,9 @@
+-#define PROGRAM_NAME "hibot"
+-#define _GNU_SOURCE
+-
+ #include "config.inc"
+ 
+-char * channel;
+-char * server;
+-char * port;
+-
+-typedef enum {
+-	C,
+-	ADA,
+-} language_t;
+-
+-language_t language = DEFAULT_LANGUAGE;
+-
+-typedef void (*syntax_setter_t)(void);
+-
+ #include "log.h"
+ #include "syntax.h"
+ #include "bot.h"
+ 
+-syntax_setter_t syntax_functions[] = {
+-	[C]   = &syntax_c,
+-	[ADA] = &syntax_ada,
+-};
+-
+-
+ const char help_message[] =
+ 	PROGRAM_NAME " <server>:<port> <channel>"
+ ;
+@@ -38,11 +16,10 @@ signed main(int argc, char * * argv) {
+ 	channel = argv[2];
+ 	server  = strdup(argv[1]);
+ 	port    = strchr(server, ':');
+-	if (port) {
+-		*port = '\0';
+-	} else {
++	if (!port) {
+ 		goto USAGE_ERROR;
+ 	}
++	*port = '\0';
+ 	++port;
+ 	int port_i = 0;
+ 	if(!sscanf(port, "%hd", &port_i)) {
+diff --git a/source/syntax.c b/source/syntax.c
+new file mode 100644
+index 0000000..557279d
+--- /dev/null
++++ b/source/syntax.c
+@@ -0,0 +1,322 @@
++#include "config.inc"
++
++#include "syntax.h"
++
++language_t language = DEFAULT_LANGUAGE;
++
++size_t syntax_count = 0;
++
++syntax_setter_t syntax_functions[] = {
++	[C]   = &syntax_c,
++	[ADA] = &syntax_ada,
++};
++
++static int    syntax_enrange [SYNTAX_LIMIT];
++static int    syntax_derange [SYNTAX_LIMIT];
++static char   syntax_begin   [SYNTAX_LIMIT] [96];
++static char   syntax_end     [SYNTAX_LIMIT] [96];
++static char   syntax_escape  [SYNTAX_LIMIT];
++static char * syntax_colour  [SYNTAX_LIMIT];
++
++static int character_compare_array (char character, char * character_array) {
++	size_t i = 0;
++
++	do {
++		if (character == character_array [i]) {
++			return (1);
++		}
++	} while (++i != strlen (character_array));
++
++	return (0);
++}
++
++static void syntax_rule (int    enrange,
++                         int    derange,
++                         char * begin,
++                         char * end,
++                         char   escape,
++                         char * colour) {
++	if (syntax_count >= SYNTAX_LIMIT) {
++		return;
++	}
++
++	strncpy (syntax_begin [syntax_count], begin, 96);
++	strncpy (syntax_end   [syntax_count], end,   96);
++
++	syntax_enrange [syntax_count] = enrange;
++	syntax_derange [syntax_count] = derange;
++	syntax_escape  [syntax_count] = escape;
++	syntax_colour  [syntax_count] = colour;
++
++	++syntax_count;
++}
++
++static size_t syntax_loop (char   * string,
++                           size_t * length) {
++	size_t offset, subset, select;
++
++	for (select = offset = 0; select != syntax_count; ++select) {
++		if (syntax_enrange [select] == 0) {
++			if (syntax_derange [select] == 0) {
++				if (strncmp (string, syntax_begin [select], strlen (syntax_begin [select])) == 0) {
++					break;
++				}
++			} else {
++				if ((strncmp (string, syntax_begin [select], strlen (syntax_begin [select])) == 0)
++				&&  (character_compare_array (string [offset + strlen (syntax_begin [select])], syntax_end [select]) == 1)) {
++					break;
++				}
++			}
++		} else {
++			for (subset = 0; subset != strlen (syntax_begin [select]); ++subset) {
++				if (string [offset] == syntax_begin [select] [subset]) {
++					goto selected;
++				}
++			}
++		}
++	}
++
++	selected:
++
++	if (select >= syntax_count) {
++		* length = 1;
++		return (select);
++	}
++
++	for (offset = 1; string [offset - 1] != '\0'; ++offset) {
++		if (string [offset] == syntax_escape [select]) {
++			++offset;
++			continue;
++		}
++
++		if (syntax_derange [select] == 0) {
++			if (strncmp (& string [offset], syntax_end [select], strlen (syntax_end [select])) == 0) {
++				* length = offset + strlen (syntax_end [select]);
++				goto finished;
++			}
++		} else {
++			subset = 0;
++			if (strcmp (syntax_end [select], "")) {
++				do {
++					if (string [offset] == syntax_end [select] [subset]) {
++						* length = offset;
++						goto finished;
++					}
++				} while (++subset != strlen (syntax_end [select]));
++			}
++		}
++	}
++
++	finished:
++
++	return (select);
++}
++
++void syntax_c (void) {
++	char * separators = ".,:;<=>+-*/%!&~^?|()[]{}'\" \t\r\n";
++
++	char * keywords [] = {
++		"register",         "volatile",         "auto",             "const",            "static",           "extern",           "if",               "else",
++		"do",               "while",            "for",              "continue",         "switch",           "case",             "default",          "break",
++		"enum",             "union",            "struct",           "typedef",          "goto",             "void",             "return",           "sizeof",
++		"char",             "short",            "int",              "long",             "signed",           "unsigned",         "float",            "double"
++	};
++
++	size_t word;
++
++	syntax_rule (0, 0, "/*", "*/", '\0', COLOUR_GREY);
++	syntax_rule (0, 0, "//", "\n", '\0', COLOUR_GREY);
++	syntax_rule (0, 0, "#",  "\n", '\\', COLOUR_YELLOW);
++	syntax_rule (0, 0, "'",  "'",  '\\', COLOUR_PINK);
++	syntax_rule (0, 0, "\"", "\"", '\\', COLOUR_PINK);
++
++	for (word = 0; word != sizeof (keywords) / sizeof (keywords [0]); ++word) {
++		syntax_rule (0, 1, keywords [word], separators, '\0', COLOUR_YELLOW);
++	}
++
++	syntax_rule (1, 0, "()[]{}",             "", '\0', COLOUR_BLUE);
++	syntax_rule (1, 0, ".,:;<=>+*-/%!&~^?|", "", '\0', COLOUR_CYAN);
++
++	syntax_rule (1, 1, "0123456789",                 separators, '\0', COLOUR_PINK);
++	syntax_rule (1, 1, "abcdefghijklmnopqrstuvwxyz", separators, '\0', COLOUR_WHITE);
++	syntax_rule (1, 1, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", separators, '\0', COLOUR_WHITE);
++	syntax_rule (1, 1, "_",                          separators, '\0', COLOUR_WHITE);
++}
++
++void syntax_ada (void) {
++	char * separators = ".,:;<=>+-*/&|()\" \t\r\n";
++
++	char * keywords [] = {
++		"abort",            "else",             "new",              "return",           "abs",              "elsif",            "not",              "reverse",
++		"abstract",         "end",              "null",             "accept",           "entry",            "select",           "access",           "of",
++		"separate",         "aliased",          "exit",             "or",               "some",             "all",              "others",           "subtype",
++		"and",              "for",              "out",              "array",            "function",         "at",               "tagged",           "generic",
++		"package",          "task",             "begin",            "goto",             "pragma",           "body",             "private",          "then",
++		"type",             "case",             "in",               "constant",         "until",            "is",               "raise",            "use",
++		"if",               "declare",          "range",            "delay",            "limited",          "record",           "when",             "delta",
++		"loop",             "rem",              "while",            "digits",           "renames",          "with",             "do",               "mod",
++		"requeue",          "xor",              "procedure",        "protected",        "interface",        "synchronized",     "exception",        "overriding",
++		"terminate"
++	};
++
++	size_t word;
++
++	syntax_rule (0, 0, "--", "\n", '\0', COLOUR_GREY);
++	syntax_rule (0, 0, "'",  "'",  '\\', COLOUR_PINK);
++	syntax_rule (0, 0, "\"", "\"", '\\', COLOUR_PINK);
++
++	for (word = 0; word != sizeof (keywords) / sizeof (keywords [0]); ++word) {
++		syntax_rule (0, 1, keywords [word], separators, '\0', COLOUR_YELLOW);
++	}
++
++	syntax_rule (1, 0, "()",             "", '\0', COLOUR_BLUE);
++	syntax_rule (1, 0, ".,:;<=>+-*/&|'", "", '\0', COLOUR_CYAN);
++
++	syntax_rule (1, 1, "0123456789",                 separators, '\0', COLOUR_PINK);
++	syntax_rule (1, 1, "abcdefghijklmnopqrstuvwxyz", separators, '\0', COLOUR_WHITE);
++	syntax_rule (1, 1, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", separators, '\0', COLOUR_WHITE);
++}
++
++void syntax_cpp (void) {
++	char * separators = ".,:;<=>+-*/%!&~^?|()[]{}'\" \t\r\n";
++
++	char * keywords [] = {
++		"alignas",          "alignof",          "and",              "and_eq",           "asm",              "atomic_cancel",    "atomic_commit",    "atomic_noexcept",
++		"auto",             "bitand",           "bitor",            "bool",             "break",            "case",             "catch",            "char",
++		"char8_t",          "char16_t",         "char32_t",         "class",            "compl",            "concept",          "const",            "consteval",
++		"constexpr",        "constinit",        "const_cast",       "continue",         "co_await",         "co_return",        "co_yield",         "decltype",
++		"default",          "delete",           "do",               "double",           "dynamic_cast",     "else",             "enum",             "explicit",
++		"export",           "extern",           "false",            "float",            "for",              "friend",           "goto",             "if",
++		"inline",           "int",              "long",             "mutable",          "namespace",        "new",              "noexcept",         "not",
++		"not_eq",           "nullptr",          "operator",         "or",               "or_eq",            "private",          "protected",        "public",
++		"reflexpr",         "register",         "reinterpret_cast", "requires",         "return",           "short",            "signed",           "sizeof",
++		"static",           "static_assert",    "static_cast",      "struct",           "switch",           "synchronized",     "template",         "this",
++		"thread_local",     "throw",            "true",             "try",              "typedef",          "typeid",           "typename",         "union",
++		"unsigned",         "using",            "virtual",          "void",             "volatile",         "wchar_t",          "while",            "xor",
++		"xor_eq",           "final",            "override",         "import",           "module",           "transaction_safe"
++	};
++
++	char * specials [] = {
++		"int8_t",           "int16_t",          "int32_t",          "int64_t",          "uint8_t",           "uint16_t",          "uint32_t",          "uint64_t",
++		"FILE",             "std",              "typeof",           "cout",             "cin",               "endl",              "timespec",          "tm"
++		/* TODO: I don't really care about this, but some people do, Anon please add what you find interesting in here... */
++	};
++
++	size_t word;
++
++	syntax_rule (0, 0, "/*", "*/", '\0', COLOUR_GREY);
++	syntax_rule (0, 0, "//", "\n", '\0', COLOUR_GREY);
++	syntax_rule (0, 0, "#",  "\n", '\\', COLOUR_YELLOW);
++	syntax_rule (0, 0, "'",  "'",  '\\', COLOUR_PINK);
++	syntax_rule (0, 0, "\"", "\"", '\\', COLOUR_PINK);
++
++	for (word = 0; word != sizeof (keywords) / sizeof (keywords [0]); ++word) {
++		syntax_rule (0, 1, keywords [word], separators, '\0', COLOUR_YELLOW);
++	}
++
++	for (word = 0; word != sizeof (specials) / sizeof (specials [0]); ++word) {
++		syntax_rule (0, 1, specials [word], separators, '\0', COLOUR_CYAN);
++	}
++
++	syntax_rule (1, 0, "()[]{}",             "", '\0', COLOUR_BLUE);
++	syntax_rule (1, 0, ".,:;<=>+*-/%!&~^?|", "", '\0', COLOUR_CYAN);
++
++	syntax_rule (1, 1, "0123456789",                 separators, '\0', COLOUR_PINK);
++	syntax_rule (1, 1, "abcdefghijklmnopqrstuvwxyz", separators, '\0', COLOUR_WHITE);
++	syntax_rule (1, 1, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", separators, '\0', COLOUR_WHITE);
++	syntax_rule (1, 1, "_",                          separators, '\0', COLOUR_WHITE);
++}
++
++void syntax_fasm (void) {
++	char * separators = ".,+-=:;(){}[]%$<> \t\r\n";
++
++	char * instructions [] = {
++		"mov",              "movabs",           "movapd",           "movaps",           "movebe",           "movsd",            "movsx",            "movzx",
++		"movsxd",           "movd",             "movq",             "movs",             "movsb",            "movsw",            "movsd",            "movsq",
++		"cmovmp",           "cmovrcxz",         "cmovc",            "cmovnc",           "cmove",            "cmovne",           "cmovz",            "cmovnz",
++		"cmovg",            "cmovng",           "cmovge",           "cmovnge",          "cmovl",            "cmovnl",           "cmovle",           "cmovnle",
++		"cmova",            "cmovna",           "cmovae",           "cmovnae",          "cmovb",            "cmovnb",           "cmovbe",           "cmovnbe",
++		"cmovs",            "cmovns",           "cmovo",            "cmovno",           "cmovp",            "cmovnp",           "cmovpo",           "cmovpe",
++		"cmp",              "cmps",             "cmpsb",            "cmpsw",            "cmpsd",            "cmpsq",            "cmpxchg",          "lea",
++		"monitor",          "cpuid",            "in",               "out",              "syscall",          "sysenter",         "sysret",           "sysexit",
++		"swap",             "bswap",            "pop",              "push",             "call",             "ret",              "enter",            "leave",
++		"and",              "or",               "not",              "neg",              "sal",              "sar",              "shl",              "shr",
++		"inc",              "dec",              "add",              "sub",              "mul",              "div",              "imul",             "idiv",
++		"nop",              "fnop",             "adc",              "sbb",              "aaa",              "aas",              "aam",              "aad",
++		"jmp",              "jrcxz",            "jc",               "jnc",              "je",               "jne",              "jz",               "jnz",
++		"jg",               "jng",              "jge",              "jnge",             "jl",               "jnl",              "jle",              "jnle",
++		"ja",               "jna",              "jae",              "jnae",             "jb",               "jnb",              "jbe",              "jnbe",
++		"js",               "jns",              "jo",               "jno",              "jp",               "jnp",              "jpo",              "jpe",
++		"rep",              "repe",             "repz",             "repne",            "repnz",            "loop",             "loope",            "loopne"
++	};
++
++	char * registers [] = {
++		"rax",              "rcx",              "rdx",              "rbx",              "rsp",              "rbp",              "rsi",              "rdi",
++		"r8",               "r9",               "r10",              "r11",              "r12",              "r13",              "r14",              "r15",
++		"eax",              "ecx",              "edx",              "ebx",              "esp",              "ebp",              "esi",              "edi",
++		"r8d",              "r9d",              "r10d",             "r11d",             "r12d",             "r13d",             "r14d",             "r15d",
++		"ax",               "cx",               "dx",               "bx",               "sp",               "bp",               "si",               "di",
++		"r8w",              "r9w",              "r10w",             "r11w",             "r12w",             "r13w",             "r14w",             "r15w",
++		"al",               "cl",               "dl",               "bl",               "spl",              "bpl",              "sil",              "dil",
++		"r8b",              "r9b",              "r10b",             "r11b",             "r12b",             "r13b",             "r14b",             "r15b",
++		"ah",               "ch",               "dh",               "bh"
++	};
++
++	char * keywords [] = {
++		"format",           "executable",       "readable",         "writable",         "segment",          "sector",           "entry",            "macro",
++		"db",               "dw",               "dd",               "dq",               "rb",               "rw",               "rd",               "rq"
++	};
++
++	size_t word;
++
++	syntax_rule (0, 0, ";",  "\n", '\0', COLOUR_GREY);
++	syntax_rule (0, 0, "'",  "'",  '\\', COLOUR_PINK);
++	syntax_rule (0, 0, "\"", "\"", '\\', COLOUR_PINK);
++
++	for (word = 0; word != sizeof (instructions) / sizeof (instructions [0]); ++word) {
++		syntax_rule (0, 1, instructions [word], separators, '\0', COLOUR_YELLOW);
++	}
++
++	for (word = 0; word != sizeof (registers) / sizeof (registers [0]); ++word) {
++		syntax_rule (0, 1, registers [word], separators, '\0', COLOUR_CYAN);
++	}
++
++	for (word = 0; word != sizeof (keywords) / sizeof (keywords [0]); ++word) {
++		syntax_rule (0, 1, keywords [word], separators, '\0', COLOUR_YELLOW);
++	}
++
++	syntax_rule (1, 0, "()[]{}",      "", '\0', COLOUR_BLUE);
++	syntax_rule (1, 0, ".,+-=:;%$<>", "", '\0', COLOUR_CYAN);
++
++	syntax_rule (1, 1, "0123456789",                 separators, '\0', COLOUR_PINK);
++	syntax_rule (1, 1, "abcdefghijklmnopqrstuvwxyz", separators, '\0', COLOUR_WHITE);
++	syntax_rule (1, 1, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", separators, '\0', COLOUR_WHITE);
++	syntax_rule (1, 1, "_",                          separators, '\0', COLOUR_WHITE);
++}
++
++char * syntax_highlight (char * code) {
++	static char buffer [4096] = "";
++	static char string [4096] = "";
++
++	size_t select, length, offset;
++
++	memset (buffer, 0, sizeof (buffer));
++	memset (string, 0, sizeof (string));
++
++	strcpy (string, code);
++
++	for (offset = 0; offset < strlen (string); offset += length) {
++		select = syntax_loop (& string [offset], & length);
++
++		if (select < syntax_count) {
++			strncat (buffer, "\003", 1);
++			strncat (buffer, syntax_colour [select], 2);
++			strncat (buffer, & string [offset], length);
++			strncat (buffer, "\017", 1);
++		} else {
++			strncat (buffer, & string [offset], length);
++		}
++	}
++
++	return (buffer);
++}
+diff --git a/source/syntax.h b/source/syntax.h
+index 502d202..81ddc7b 100644
+--- a/source/syntax.h
++++ b/source/syntax.h
+@@ -1,3 +1,5 @@
++#ifndef SYNTAX_H
++
+ #include <string.h>
+ 
+ #define SYNTAX_LIMIT (256)
+@@ -14,319 +16,25 @@
+ #define COLOUR_PINK    ("13")
+ #define COLOUR_GREY    ("14")
+ 
++typedef enum {
++	C,
++	ADA,
++} language_t;
++
++typedef void (*syntax_setter_t)(void);
++
+ extern void syntax_c   (void);
+ extern void syntax_ada (void);
++extern void syntax_fasm (void);
++extern void syntax_cpp (void);
+ 
+ extern char * syntax_highlight (char * string);
+ 
+-static size_t syntax_count = 0;
+-
+-static int    syntax_enrange [SYNTAX_LIMIT];
+-static int    syntax_derange [SYNTAX_LIMIT];
+-static char   syntax_begin   [SYNTAX_LIMIT] [96];
+-static char   syntax_end     [SYNTAX_LIMIT] [96];
+-static char   syntax_escape  [SYNTAX_LIMIT];
+-static char * syntax_colour  [SYNTAX_LIMIT];
+-
+-static int character_compare_array (char character, char * character_array) {
+-	size_t i = 0;
+-
+-	do {
+-		if (character == character_array [i]) {
+-			return (1);
+-		}
+-	} while (++i != strlen (character_array));
+-
+-	return (0);
+-}
+-
+-static void syntax_rule (int    enrange,
+-                         int    derange,
+-                         char * begin,
+-                         char * end,
+-                         char   escape,
+-                         char * colour) {
+-	if (syntax_count >= SYNTAX_LIMIT) {
+-		return;
+-	}
+-
+-	strncpy (syntax_begin [syntax_count], begin, 96);
+-	strncpy (syntax_end   [syntax_count], end,   96);
+-
+-	syntax_enrange [syntax_count] = enrange;
+-	syntax_derange [syntax_count] = derange;
+-	syntax_escape  [syntax_count] = escape;
+-	syntax_colour  [syntax_count] = colour;
+-
+-	++syntax_count;
+-}
+-
+-static size_t syntax_loop (char   * string,
+-                           size_t * length) {
+-	size_t offset, subset, select;
+-
+-	for (select = offset = 0; select != syntax_count; ++select) {
+-		if (syntax_enrange [select] == 0) {
+-			if (syntax_derange [select] == 0) {
+-				if (strncmp (string, syntax_begin [select], strlen (syntax_begin [select])) == 0) {
+-					break;
+-				}
+-			} else {
+-				if ((strncmp (string, syntax_begin [select], strlen (syntax_begin [select])) == 0)
+-				&&  (character_compare_array (string [offset + strlen (syntax_begin [select])], syntax_end [select]) == 1)) {
+-					break;
+-				}
+-			}
+-		} else {
+-			for (subset = 0; subset != strlen (syntax_begin [select]); ++subset) {
+-				if (string [offset] == syntax_begin [select] [subset]) {
+-					goto selected;
+-				}
+-			}
+-		}
+-	}
+-
+-	selected:
+-
+-	if (select >= syntax_count) {
+-		* length = 1;
+-		return (select);
+-	}
+-
+-	for (offset = 1; string [offset - 1] != '\0'; ++offset) {
+-		if (string [offset] == syntax_escape [select]) {
+-			++offset;
+-			continue;
+-		}
+-
+-		if (syntax_derange [select] == 0) {
+-			if (strncmp (& string [offset], syntax_end [select], strlen (syntax_end [select])) == 0) {
+-				* length = offset + strlen (syntax_end [select]);
+-				goto finished;
+-			}
+-		} else {
+-			subset = 0;
+-			if (strcmp (syntax_end [select], "") == 0) {
+-				break;
+-			} do {
+-				if (string [offset] == syntax_end [select] [subset]) {
+-					* length = offset;
+-					goto finished;
+-				}
+-			} while (++subset != strlen (syntax_end [select]));
+-		}
+-	}
+-
+-	finished:
+-
+-	return (select);
+-}
+-
+-void syntax_c (void) {
+-	char * separators = ".,:;<=>+-*/%!&~^?|()[]{}'\" \t\r\n";
+-
+-	char * keywords [] = {
+-		"register",         "volatile",         "auto",             "const",            "static",           "extern",           "if",               "else",
+-		"do",               "while",            "for",              "continue",         "switch",           "case",             "default",          "break",
+-		"enum",             "union",            "struct",           "typedef",          "goto",             "void",             "return",           "sizeof",
+-		"char",             "short",            "int",              "long",             "signed",           "unsigned",         "float",            "double"
+-	};
+-
+-	size_t word;
+-
+-	syntax_rule (0, 0, "/*", "*/", '\0', COLOUR_GREY);
+-	syntax_rule (0, 0, "//", "\n", '\0', COLOUR_GREY);
+-	syntax_rule (0, 0, "#",  "\n", '\\', COLOUR_YELLOW);
+-	syntax_rule (0, 0, "'",  "'",  '\\', COLOUR_PINK);
+-	syntax_rule (0, 0, "\"", "\"", '\\', COLOUR_PINK);
+-
+-	for (word = 0; word != sizeof (keywords) / sizeof (keywords [0]); ++word) {
+-		syntax_rule (0, 1, keywords [word], separators, '\0', COLOUR_YELLOW);
+-	}
+-
+-	syntax_rule (1, 0, "()[]{}",             "", '\0', COLOUR_BLUE);
+-	syntax_rule (1, 0, ".,:;<=>+*-/%!&~^?|", "", '\0', COLOUR_CYAN);
+-
+-	syntax_rule (1, 1, "0123456789",                 separators, '\0', COLOUR_PINK);
+-	syntax_rule (1, 1, "abcdefghijklmnopqrstuvwxyz", separators, '\0', COLOUR_WHITE);
+-	syntax_rule (1, 1, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", separators, '\0', COLOUR_WHITE);
+-	syntax_rule (1, 1, "_",                          separators, '\0', COLOUR_WHITE);
+-}
+-
+-void syntax_ada (void) {
+-	char * separators = ".,:;<=>+-*/&|()\" \t\r\n";
+-
+-	char * keywords [] = {
+-		"abort",            "else",             "new",              "return",           "abs",              "elsif",            "not",              "reverse",
+-		"abstract",         "end",              "null",             "accept",           "entry",            "select",           "access",           "of",
+-		"separate",         "aliased",          "exit",             "or",               "some",             "all",              "others",           "subtype",
+-		"and",              "for",              "out",              "array",            "function",         "at",               "tagged",           "generic",
+-		"package",          "task",             "begin",            "goto",             "pragma",           "body",             "private",          "then",
+-		"type",             "case",             "in",               "constant",         "until",            "is",               "raise",            "use",
+-		"if",               "declare",          "range",            "delay",            "limited",          "record",           "when",             "delta",
+-		"loop",             "rem",              "while",            "digits",           "renames",          "with",             "do",               "mod",
+-		"requeue",          "xor",              "procedure",        "protected",        "interface",        "synchronized",     "exception",        "overriding",
+-		"terminate"
+-	};
+-
+-	size_t word;
+-
+-	syntax_rule (0, 0, "--", "\n", '\0', COLOUR_GREY);
+-	syntax_rule (0, 0, "'",  "'",  '\\', COLOUR_PINK);
+-	syntax_rule (0, 0, "\"", "\"", '\\', COLOUR_PINK);
+-
+-	for (word = 0; word != sizeof (keywords) / sizeof (keywords [0]); ++word) {
+-		syntax_rule (0, 1, keywords [word], separators, '\0', COLOUR_YELLOW);
+-	}
+-
+-	syntax_rule (1, 0, "()",             "", '\0', COLOUR_BLUE);
+-	syntax_rule (1, 0, ".,:;<=>+-*/&|'", "", '\0', COLOUR_CYAN);
+-
+-	syntax_rule (1, 1, "0123456789",                 separators, '\0', COLOUR_PINK);
+-	syntax_rule (1, 1, "abcdefghijklmnopqrstuvwxyz", separators, '\0', COLOUR_WHITE);
+-	syntax_rule (1, 1, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", separators, '\0', COLOUR_WHITE);
+-}
+-
+-void syntax_cpp (void) {
+-	char * separators = ".,:;<=>+-*/%!&~^?|()[]{}'\" \t\r\n";
+-
+-	char * keywords [] = {
+-		"alignas",          "alignof",          "and",              "and_eq",           "asm",              "atomic_cancel",    "atomic_commit",    "atomic_noexcept",
+-		"auto",             "bitand",           "bitor",            "bool",             "break",            "case",             "catch",            "char",
+-		"char8_t",          "char16_t",         "char32_t",         "class",            "compl",            "concept",          "const",            "consteval",
+-		"constexpr",        "constinit",        "const_cast",       "continue",         "co_await",         "co_return",        "co_yield",         "decltype",
+-		"default",          "delete",           "do",               "double",           "dynamic_cast",     "else",             "enum",             "explicit",
+-		"export",           "extern",           "false",            "float",            "for",              "friend",           "goto",             "if",
+-		"inline",           "int",              "long",             "mutable",          "namespace",        "new",              "noexcept",         "not",
+-		"not_eq",           "nullptr",          "operator",         "or",               "or_eq",            "private",          "protected",        "public",
+-		"reflexpr",         "register",         "reinterpret_cast", "requires",         "return",           "short",            "signed",           "sizeof",
+-		"static",           "static_assert",    "static_cast",      "struct",           "switch",           "synchronized",     "template",         "this",
+-		"thread_local",     "throw",            "true",             "try",              "typedef",          "typeid",           "typename",         "union",
+-		"unsigned",         "using",            "virtual",          "void",             "volatile",         "wchar_t",          "while",            "xor",
+-		"xor_eq",           "final",            "override",         "import",           "module",           "transaction_safe"
+-	};
+-
+-	char * specials [] = {
+-		"int8_t",           "int16_t",          "int32_t",          "int64_t",          "uint8_t",           "uint16_t",          "uint32_t",          "uint64_t",
+-		"FILE",             "std",              "typeof",           "cout",             "cin",               "endl",              "timespec",          "tm"
+-		/* TODO: I don't really care about this, but some people do, Anon please add what you find interesting in here... */
+-	};
+-
+-	size_t word;
+-
+-	syntax_rule (0, 0, "/*", "*/", '\0', COLOUR_GREY);
+-	syntax_rule (0, 0, "//", "\n", '\0', COLOUR_GREY);
+-	syntax_rule (0, 0, "#",  "\n", '\\', COLOUR_YELLOW);
+-	syntax_rule (0, 0, "'",  "'",  '\\', COLOUR_PINK);
+-	syntax_rule (0, 0, "\"", "\"", '\\', COLOUR_PINK);
+-
+-	for (word = 0; word != sizeof (keywords) / sizeof (keywords [0]); ++word) {
+-		syntax_rule (0, 1, keywords [word], separators, '\0', COLOUR_YELLOW);
+-	}
+-
+-	for (word = 0; word != sizeof (specials) / sizeof (specials [0]); ++word) {
+-		syntax_rule (0, 1, specials [word], separators, '\0', COLOUR_CYAN);
+-	}
+-
+-	syntax_rule (1, 0, "()[]{}",             "", '\0', COLOUR_BLUE);
+-	syntax_rule (1, 0, ".,:;<=>+*-/%!&~^?|", "", '\0', COLOUR_CYAN);
+-
+-	syntax_rule (1, 1, "0123456789",                 separators, '\0', COLOUR_PINK);
+-	syntax_rule (1, 1, "abcdefghijklmnopqrstuvwxyz", separators, '\0', COLOUR_WHITE);
+-	syntax_rule (1, 1, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", separators, '\0', COLOUR_WHITE);
+-	syntax_rule (1, 1, "_",                          separators, '\0', COLOUR_WHITE);
+-}
+-
+-void syntax_fasm (void) {
+-	char * separators = ".,+-=:;(){}[]%$<> \t\r\n";
+-
+-	char * instructions [] = {
+-		"mov",              "movabs",           "movapd",           "movaps",           "movebe",           "movsd",            "movsx",            "movzx",
+-		"movsxd",           "movd",             "movq",             "movs",             "movsb",            "movsw",            "movsd",            "movsq",
+-		"cmovmp",           "cmovrcxz",         "cmovc",            "cmovnc",           "cmove",            "cmovne",           "cmovz",            "cmovnz",
+-		"cmovg",            "cmovng",           "cmovge",           "cmovnge",          "cmovl",            "cmovnl",           "cmovle",           "cmovnle",
+-		"cmova",            "cmovna",           "cmovae",           "cmovnae",          "cmovb",            "cmovnb",           "cmovbe",           "cmovnbe",
+-		"cmovs",            "cmovns",           "cmovo",            "cmovno",           "cmovp",            "cmovnp",           "cmovpo",           "cmovpe",
+-		"cmp",              "cmps",             "cmpsb",            "cmpsw",            "cmpsd",            "cmpsq",            "cmpxchg",          "lea",
+-		"monitor",          "cpuid",            "in",               "out",              "syscall",          "sysenter",         "sysret",           "sysexit",
+-		"swap",             "bswap",            "pop",              "push",             "call",             "ret",              "enter",            "leave",
+-		"and",              "or",               "not",              "neg",              "sal",              "sar",              "shl",              "shr",
+-		"inc",              "dec",              "add",              "sub",              "mul",              "div",              "imul",             "idiv",
+-		"nop",              "fnop",             "adc",              "sbb",              "aaa",              "aas",              "aam",              "aad",
+-		"jmp",              "jrcxz",            "jc",               "jnc",              "je",               "jne",              "jz",               "jnz",
+-		"jg",               "jng",              "jge",              "jnge",             "jl",               "jnl",              "jle",              "jnle",
+-		"ja",               "jna",              "jae",              "jnae",             "jb",               "jnb",              "jbe",              "jnbe",
+-		"js",               "jns",              "jo",               "jno",              "jp",               "jnp",              "jpo",              "jpe",
+-		"rep",              "repe",             "repz",             "repne",            "repnz",            "loop",             "loope",            "loopne"
+-	};
+-
+-	char * registers [] = {
+-		"rax",              "rcx",              "rdx",              "rbx",              "rsp",              "rbp",              "rsi",              "rdi",
+-		"r8",               "r9",               "r10",              "r11",              "r12",              "r13",              "r14",              "r15",
+-		"eax",              "ecx",              "edx",              "ebx",              "esp",              "ebp",              "esi",              "edi",
+-		"r8d",              "r9d",              "r10d",             "r11d",             "r12d",             "r13d",             "r14d",             "r15d",
+-		"ax",               "cx",               "dx",               "bx",               "sp",               "bp",               "si",               "di",
+-		"r8w",              "r9w",              "r10w",             "r11w",             "r12w",             "r13w",             "r14w",             "r15w",
+-		"al",               "cl",               "dl",               "bl",               "spl",              "bpl",              "sil",              "dil",
+-		"r8b",              "r9b",              "r10b",             "r11b",             "r12b",             "r13b",             "r14b",             "r15b",
+-		"ah",               "ch",               "dh",               "bh"
+-	};
+-
+-	char * keywords [] = {
+-		"format",           "executable",       "readable",         "writable",         "segment",          "sector",           "entry",            "macro",
+-		"db",               "dw",               "dd",               "dq",               "rb",               "rw",               "rd",               "rq"
+-	};
+-
+-	size_t word;
+-
+-	syntax_rule (0, 0, ";",  "\n", '\0', COLOUR_GREY);
+-	syntax_rule (0, 0, "'",  "'",  '\\', COLOUR_PINK);
+-	syntax_rule (0, 0, "\"", "\"", '\\', COLOUR_PINK);
+-
+-	for (word = 0; word != sizeof (instructions) / sizeof (instructions [0]); ++word) {
+-		syntax_rule (0, 1, instructions [word], separators, '\0', COLOUR_YELLOW);
+-	}
+-
+-	for (word = 0; word != sizeof (registers) / sizeof (registers [0]); ++word) {
+-		syntax_rule (0, 1, registers [word], separators, '\0', COLOUR_CYAN);
+-	}
+-
+-	for (word = 0; word != sizeof (keywords) / sizeof (keywords [0]); ++word) {
+-		syntax_rule (0, 1, keywords [word], separators, '\0', COLOUR_YELLOW);
+-	}
+-
+-	syntax_rule (1, 0, "()[]{}",      "", '\0', COLOUR_BLUE);
+-	syntax_rule (1, 0, ".,+-=:;%$<>", "", '\0', COLOUR_CYAN);
+-
+-	syntax_rule (1, 1, "0123456789",                 separators, '\0', COLOUR_PINK);
+-	syntax_rule (1, 1, "abcdefghijklmnopqrstuvwxyz", separators, '\0', COLOUR_WHITE);
+-	syntax_rule (1, 1, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", separators, '\0', COLOUR_WHITE);
+-	syntax_rule (1, 1, "_",                          separators, '\0', COLOUR_WHITE);
+-}
+-
+-char * syntax_highlight (char * code) {
+-	static char buffer [4096] = "";
+-	static char string [4096] = "";
+-
+-	size_t select, length, offset;
+-
+-	memset (buffer, 0, sizeof (buffer));
+-	memset (string, 0, sizeof (string));
+-
+-	strcpy (string, code);
++extern size_t syntax_count;
+ 
+-	for (offset = 0; offset < strlen (string); offset += length) {
+-		select = syntax_loop (& string [offset], & length);
++extern language_t language;
+ 
+-		if (select < syntax_count) {
+-			strncat (buffer, "\003", 1);
+-			strncat (buffer, syntax_colour [select], 2);
+-			strncat (buffer, & string [offset], (size_t) length);
+-			strncat (buffer, "\017", 1);
+-		} else {
+-			strncat (buffer, & string [offset], (size_t) length);
+-		}
+-	}
++extern syntax_setter_t syntax_functions[];
+ 
+-	return (buffer);
+-}
++#define SYNTAX_H
++#endif
+-- 
+2.39.2
+
