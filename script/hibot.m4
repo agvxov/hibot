@@ -1,19 +1,15 @@
 #!/sbin/openrc-run
 
-command_args="irc.rizon.net:6665 #/g/test"
+command_args="irc.rizon.net:6665 \#/g/test"
 
 name="hibot"
-command="syscmd(`printf $(pwd)')/${name}"
 pidfile="/var/run/${name}.pid"
+supervisor="supervise-daemon"
 
-start() {
-  ebegin "Starting $name"
-  start-stop-daemon --start --background --make-pidfile --pidfile "$pidfile" --exec "$command" -- $command_args
-  eend $?
-}
+command="syscmd(`printf $(pwd)')/${name}"
 
-stop() {
-  ebegin "Stopping $name"
-  start-stop-daemon --stop --pidfile "$pidfile"
-  eend $?
+reload() {
+      ebegin "Reloading ${RC_SVCNAME}"
+      ${supervisor} ${name} --pidfile "${pidfile}" -- ${command_args}
+      eend $?
 }
