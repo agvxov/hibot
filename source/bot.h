@@ -189,6 +189,19 @@ void event_connect(irc_session_t * session,
 }
 
 static
+void event_disconnect(irc_session_t * session,
+							const char	* event,
+							const char	* origin,
+							const char ** params,
+							unsigned int count) {
+	(void)event;
+	(void)origin;
+	(void)params;
+	(void)count;
+	raise(SIGSEGV);
+}
+
+static
 void event_privmsg(irc_session_t * session,
                    const char  * event,
                    const char  * origin,
