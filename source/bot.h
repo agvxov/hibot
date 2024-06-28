@@ -104,19 +104,9 @@ void event_connect(irc_session_t * session,
 	logf_notice("Joined destination channel: `%s`.", channel);
 }
 
-static
-void event_disconnect(irc_session_t * session,
-							const char	* event,
-							const char	* origin,
-							const char ** params,
-							unsigned int count) {
-    (void)session;
-	(void)event;
-	(void)origin;
-	(void)params;
-	(void)count;
-	raise(SIGSEGV);
-}
+
+// XXX: event_disconnect() is not a real function,
+//       use int irc_is_connected(irc_session_t * session) instead
 
 static
 void event_privmsg(irc_session_t * session,
