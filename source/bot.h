@@ -6,7 +6,6 @@
 #include <string.h>
 #include <ctype.h>
 #include <signal.h>
-#include <sys/time.h>
 
 extern syntax_setter_t syntax_functions[];
 
@@ -31,111 +30,30 @@ char * username_root(const char * const fullname){
 	return r;
 }
 
-typedef struct {
-	int is_active;
-	char * user;
-	language_t language;
-	struct itimerval timer;
-	char * buffer[128];			// XXX: no overflow detection/avertion
-	unsigned int buffer_head;   //       is implemented on this bunch
-} request_t;
-
-void init_request(request_t * request) {
-	request->is_active = 0;
-	request->timer.it_value.tv_sec     = 0;
-	request->timer.it_value.tv_usec    = 0;
-	request->timer.it_interval.tv_sec  = 0;
-	request->timer.it_interval.tv_usec = 0;
-	request->buffer_head = 0;
+void on_request_timeout(int unused) {
+    (void)(unused);
+    drop_request(request_queue[0]);
 }
 
-request_t   request_queue__[message_queue_size];
-request_t * request_queue[message_queue_size];
-unsigned int request_queue_head = 0;
-
-static inline
-void touch_request_timer(request_t * request) {
-	request->timer.it_value.tv_sec = message_timeout;
-	setitimer(ITIMER_REAL, &(request->timer), NULL);
-}
-
-void activate_request(request_t * request) {
-	request->is_active = 1;
-
-	/* message header */
+void flush_request(request_t * request) {
+	// Message header
 	char * short_name = username_root(request->user);
 	irc_message(short_name);
 	free(short_name);
-}
 
-request_t * take_request(const char * const user, language_t language) {
-	for (unsigned int i = 0; i < request_queue_head; i++) {
-		if(!strcmp(request_queue[i]->user, user)) {
-			return request_queue[i];
-		}
-	}
+    // Message body
+    syntax_count = 0;
+    syntax_functions[request->language]();
+    for (unsigned i = 0; i < request->buffer_head; i++) {
+        irc_message(syntax_highlight(request->buffer[i]));
+    }
 
-	if (request_queue_head == message_queue_size) {
-		return NULL;
-	}
-
-	request_t * request = request_queue[request_queue_head];
-
-	request->language  = language;
-	request->user      = strdup(user);
-
-	if (request_queue_head == 0) {
-		activate_request(request);
-	}
-
-	++request_queue_head;
-
-	char * log_message;
-	asprintf(&log_message, "Took message: %p (%d)", (void*)request, request_queue_head);
-	log_notice(log_message);
-	free(log_message);
-
-	return request;
-}
-
-void drop_reqest() {
-	request_t * request = request_queue[0];
-
-	if (message_queue_size > 1) {
-		for (unsigned int i = 0; i < request_queue_head; i++) {
-			request_queue[i] = request_queue[i+1];
-		}
-		request_queue[request_queue_head] = request;
-	}
-	
-	--request_queue_head;
-
-	request->is_active = 0;
-	free(request->user);
-
-	if (request_queue_head) {
-		activate_request(request_queue[0]);
-		for (unsigned int i = 0; i < request_queue[0]->buffer_head; i++) {
-			irc_message(request_queue[0]->buffer[i]);
-			free(request_queue[0]->buffer[i]);
-		}
-		request_queue[0]->buffer_head = 0;
-		touch_request_timer(request_queue[0]);
-	}
-
-	char * log_message;
-	asprintf(&log_message, "Dropped message: %p (%d)", (void*)request, request_queue_head);
-	log_notice(log_message);
-	free(log_message);
-}
-
-void on_message_timeout(int unused) {
-	(void)unused;
-
-	/* message footer */
+	// Message footer
 	irc_message("--");
 
-	drop_reqest(request_queue);
+	logf_notice("Flushed message: %p (%d)", (void*)request, request_queue_head);
+
+    drop_request(request);
 }
 
 static
@@ -165,6 +83,7 @@ void irc_help() {
 	irc_message("  !<language>         // set language for next message");
 	irc_message("  <code>              // echo this code");
 	irc_message("  !<language> <code>  // set language and echo code");
+	irc_message("  !--                 // flush all code");
 	irc_message("--");
 }
 
@@ -182,10 +101,7 @@ void event_connect(irc_session_t * session,
 
 	log_notice("IRC connection secured.");
 	irc_cmd_join(session, channel, 0);
-	char * buffer;
-	asprintf(&buffer, "Joined destination channel: `%s`.", channel);
-	log_notice(buffer);
-	free(buffer);
+	logf_notice("Joined destination channel: `%s`.", channel);
 }
 
 static
@@ -194,6 +110,7 @@ void event_disconnect(irc_session_t * session,
 							const char	* origin,
 							const char ** params,
 							unsigned int count) {
+    (void)session;
 	(void)event;
 	(void)origin;
 	(void)params;
@@ -218,6 +135,11 @@ void event_privmsg(irc_session_t * session,
 
 	/* Is command */
 	if (*message == '!') {
+		if (!strcmp(message, "!help")) {
+			irc_help();
+			goto END;
+		}
+		/* */
 		terminator = message;
 		while (*terminator != ' ') {
 			if (*terminator == '\0') {
@@ -227,38 +149,39 @@ void event_privmsg(irc_session_t * session,
 			++terminator;
 		}
 		*terminator = '\0';
-		/* */
-		if (!strcmp(message, "!help")) {
-			irc_help();
-			goto END;
-		}
-		/* get language */
-		for (char * s = message + 1; *s != '\0'; s++) {
-			*s = toupper(*s);
-		}
-		int l = translate_language(message + 1);
-		message = terminator + 1;
-		if (l != -1) {
-			language = l;
-			syntax_count = 0;
-			syntax_functions[language]();
-		}
+        /* */
+        {
+            request_t * request = take_request(origin);
+
+            if (!strcmp(message, "!--")) {
+                if (request) {
+                    flush_request(request);
+                }
+                goto END;
+            }
+
+            /* get language */
+            for (char * s = message + 1; *s != '\0'; s++) {
+                *s = toupper(*s);
+            }
+            int l = translate_language(message + 1);
+            message = terminator + 1;
+            if (l != -1) {
+                request->language = l;
+            }
+        }
 	}
 
 	/* Is code */
 	if (is_code) {
-		request_t * request = take_request(origin, language);
+		request_t * request = take_request(origin);
 		if (!request) {
 			irc_private_message(origin, message_queue_full_message);
 			goto END;
 		}
 
-		if (request->is_active) {
-			touch_request_timer(request);
-			irc_message(syntax_highlight(message));
-		} else {
-			request->buffer[request->buffer_head++] = strdup(syntax_highlight(message));
-		}
+		touch_request_timer(request);
+		request->buffer[request->buffer_head++] = strdup(message);
 	}
 
 	END:
@@ -302,7 +225,7 @@ int connect_bot(const char * const server, const short port) {
 		request_queue[i] = &request_queue__[i];
 		init_request(request_queue[i]);
 	}
-	signal(SIGALRM, on_message_timeout);
+	signal(SIGALRM, on_request_timeout);
 
 	irc_connect(session,
 	            server,

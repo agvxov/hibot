@@ -2,7 +2,7 @@
 
 const char * const username                   = PROGRAM_NAME;
 const char * const password                   = "";
-const int          message_timeout            = 3;
+const int          message_timeout            = 10;
 const char * const message_queue_full_message = "Air space too crowded in this area.";
 #define message_queue_size    3
 #define DEFAULT_LANGUAGE      C

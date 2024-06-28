@@ -14,12 +14,11 @@ typedef enum {
 	ADA,
 } language_t;
 
-language_t language = DEFAULT_LANGUAGE;
-
 typedef void (*syntax_setter_t)(void);
 
 #include "log.h"
 #include "syntax.h"
+#include "request.h"
 #include "bot.h"
 
 syntax_setter_t syntax_functions[] = {
@@ -55,7 +54,7 @@ signed main(int argc, char * * argv) {
 
 	log_file = LOG_FILE;
 
-	syntax_functions[language]();
+	syntax_functions[DEFAULT_LANGUAGE]();
 
 	connect_bot(server, port_i);
 	connection_loop();

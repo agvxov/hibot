@@ -210,7 +210,8 @@ void syntax_cpp (void) {
 
 	char * specials [] = {
 		"int8_t",           "int16_t",          "int32_t",          "int64_t",          "uint8_t",           "uint16_t",          "uint32_t",          "uint64_t",
-		"FILE",             "std",              "typeof",           "cout",             "cin",               "endl",              "timespec",          "tm"
+		"FILE",             "std",              "typeof",           "cout",             "cin",               "endl",              "timespec",          "tm",
+        "vector",           "stack",            "map",              "unordered_map",    "queue",             "deque",
 		/* TODO: I don't really care about this, but some people do, Anon please add what you find interesting in here... */
 	};
 
