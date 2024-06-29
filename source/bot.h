@@ -6,6 +6,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <signal.h>
+#include <unistd.h>
 
 extern syntax_setter_t syntax_functions[];
 
@@ -14,6 +15,7 @@ static irc_callbacks_t callbacks;
 
 static inline
 void irc_message(const char * const message) {
+    log_notice(message);
 	irc_cmd_msg(session, channel, message);
 }
 
@@ -32,6 +34,7 @@ char * username_root(const char * const fullname){
 
 void on_request_timeout(int unused) {
     (void)(unused);
+    logf_notice("Message time out: %p (%d)", (void*)request_queue[0], request_queue_head);
     drop_request(request_queue[0]);
 }
 

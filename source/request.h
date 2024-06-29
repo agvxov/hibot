@@ -37,8 +37,10 @@ void reinit_request(request_t * request) {
 
 static inline
 void touch_request_timer(request_t * const request) {
+    struct itimerval v;
 	request->timer.it_value.tv_sec = message_timeout;
-	setitimer(ITIMER_REAL, &(request->timer), NULL);
+	setitimer(ITIMER_REAL, &(request->timer), &v);
+    logf_notice("Timer touched (old value: %ds)", v.it_value.tv_sec);
 }
 
 request_t * take_request(const char * const user) {
