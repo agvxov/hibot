@@ -39,6 +39,11 @@ void on_request_timeout(int unused) {
 }
 
 void flush_request(request_t * request) {
+	setitimer(ITIMER_REAL, NULL, NULL);
+    if (!request_queue_head) {
+        return;
+    }
+
 	// Message header
 	char * short_name = username_root(request->user);
 	irc_message(short_name);
